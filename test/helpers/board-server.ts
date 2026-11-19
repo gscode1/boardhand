@@ -79,7 +79,7 @@ async function sendResponse(res: ServerResponse, response: Response): Promise<vo
 // first (token-minting) request.
 let clientLock: Promise<unknown> = Promise.resolve();
 
-async function makeClient(url: string, token: string, profile: string | undefined): Promise<Board> {
+export async function makeClient(url: string, token: string, profile: string | undefined): Promise<Board> {
   const run = async (): Promise<Board> => {
     const saved = {
       BOARD_URL: process.env.BOARD_URL,

@@ -28,9 +28,10 @@ export type Child = {
   dispose(): void;
 };
 
-export function spawnMain(env: Record<string, string>): Child {
+/** The worker entrypoint by default; pass `dist/server/main.js` for the board server. */
+export function spawnMain(env: Record<string, string>, script: string[] = ["dist", "main.js"]): Child {
   // A clean environment: nothing of the test runner's own BOARD_* values may leak in.
-  const proc: ChildProcess = spawn(process.execPath, [join(ROOT, "dist", "main.js")], {
+  const proc: ChildProcess = spawn(process.execPath, [join(ROOT, ...script)], {
     cwd: ROOT,
     env: { PATH: process.env["PATH"] ?? "", ...env },
     stdio: ["ignore", "pipe", "pipe"],

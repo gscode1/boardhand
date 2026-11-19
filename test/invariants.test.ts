@@ -127,4 +127,27 @@ describe("layer invariants", () => {
     }
     expect(offenders).toEqual([]);
   });
+
+  // The board server is its own program (ADR 0005): the worker must not depend on it, and neither ships test code.
+  it(
+    "src/ imports nothing from server/ or test/, and server/ nothing from src/ or test/",
+    { timeout: 20_000 },
+    async () => {
+      const offenders: string[] = [];
+      const pointsAt = (specifier: string, file: string, dir: string): boolean =>
+        specifier.startsWith(".") && resolve(dirname(file), specifier).startsWith(join(root, dir) + sep);
+      for (const [from, banned] of [
+        ["src", ["server", "test"]],
+        ["server", ["src", "test"]],
+      ] as const) {
+        for (const file of await tsFiles(join(root, from))) {
+          for (const specifier of specifiersOf(await readFile(file, "utf8"))) {
+            for (const dir of banned)
+              if (pointsAt(specifier, file, dir)) offenders.push(`${rel(file)} imports ${specifier}`);
+          }
+        }
+      }
+      expect(offenders).toEqual([]);
+    },
+  );
 });
