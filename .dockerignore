@@ -1,0 +1,17 @@
+.git
+.github
+.claude
+node_modules
+dist
+coverage
+test
+scripts
+docs
+charts
+.board
+local
+.env
+.env.*
+*.log
+*.md
+!package.json
