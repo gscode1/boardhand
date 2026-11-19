@@ -65,13 +65,18 @@ Terms:
 
 One task, start to end:
 
-1. A claim loop calls `tasks.claim({ channel, label, from, wait, lease })`.
-2. It looks for a run id already on the thread (a crash restart) and re-attaches; otherwise it calls `backend.start`.
-3. It replies `Started <backend> run <id>`, labelled `boardhand.run=<id>`.
-4. It renews the lease every third of the lease, independent of the backend's long-poll.
+1. A claim loop calls `tasks.claim({ channel, label, from, wait, lease })` and stores the claim's proof (epoch, token).
+2. It renews the lease every third of the lease, on its own timer, independent of the backend's long-poll.
+3. It reads the run id from the claim store or the latest `boardhand.run` label on the thread and calls
+   `backend.find(task, hint)`; if that returns a run it re-attaches, otherwise it calls `backend.start`.
+4. It replies `Started <backend> run <id>` (or `Re-attached to ...`), labelled `boardhand.run=<id>`.
 5. It follows the run with `backend.wait` and replies with progress where the backend has it.
-6. On success it replies with the result and completes the task; on failure it replies and fails it.
-7. On `claim_lost` it cancels the run and settles nothing. On SIGTERM it releases the task.
+6. On success it completes the task, then replies `Completed: <result>`; on failure it fails the task, then replies
+   `Failed: <reason>`.
+7. On `claim_lost` it cancels the run and settles nothing. On SIGTERM it releases tasks whose run has not started and
+   leaves started runs alone; a restart resumes them from the claim store.
+
+[docs/worker.md](docs/worker.md) has the details.
 
 ## 5. Phases
 
@@ -80,6 +85,9 @@ One task, start to end:
 `AGENT.md`, `plan.md`, ADRs 0001–0004, README.
 
 ### Phase 1: Worker core with a fake backend
+
+Status: built on branch `3-phase-1-worker`. The code is in `src/`; the tests are in `test/`. Behaviour is described in
+[docs/worker.md](docs/worker.md) and [docs/configuration.md](docs/configuration.md).
 
 - `src/board.ts`: the only module that imports `@vercel/board`.
 - Claim loop with concurrency, renew timer, `claim_lost` handling, release on shutdown, backoff when the board is down.
@@ -138,18 +146,24 @@ One task, start to end:
 - Where task progress goes: one reply per turn, or one edited status message.
 - How a person answers a run that needs input: `block` the task and resume the run on unblock, or fail and re-post.
 
-## 9. Repository layout (planned)
+## 9. Repository layout
 
 ```
 src/
   board.ts          the only importer of @vercel/board
   worker.ts         claim loops, renew, settle
   route.ts          route config and validation
+  claims.ts         the claim store: proof of held claims, for restarts
+  atomic.ts         atomic file writes, used by the claim store and the fake backend
+  main.ts           entrypoint: load the route, start the worker, handle signals
   backends/
     backend.ts      the Backend interface
-    fake.ts
+    index.ts        createBackend: picks a backend by name
+    fake.ts         scriptable backend for tests
     pi.ts           pi-durable-k8s session API client
 test/
 charts/boardhand/
 docs/decisions/
+docs/configuration.md
+docs/worker.md
 ```
