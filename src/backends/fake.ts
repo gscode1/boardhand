@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { writeFileAtomic } from "../atomic.js";
+import { BackendUnavailableError } from "./backend.js";
 import type { Backend, RunTask, RunUpdate } from "./backend.js";
 
 export type FakeBehavior = "succeed" | "fail" | "hang" | "slow";
@@ -16,6 +17,10 @@ export type FakeOptions = {
   stepMs?: number;
   /** How long a slow run takes; it reports three progress updates on the way. Default 2000. */
   slowMs?: number;
+  /** The first this many `start` calls throw `BackendUnavailableError`, as a platform that is down does. */
+  unavailableStarts?: number;
+  /** The first this many `find` calls throw `BackendUnavailableError`. */
+  unavailableFinds?: number;
   /** Persist runs as `<dir>/runs/<id>.json`. */
   dir?: string;
 };
@@ -54,6 +59,13 @@ export function parseFakeOptions(raw: Record<string, unknown>): FakeOptions {
       throw new Error("fake: behavior must be succeed, fail, hang or slow");
     options.behavior = behavior;
   }
+  for (const key of ["unavailableStarts", "unavailableFinds"] as const) {
+    const value = raw[key];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0)
+      throw new Error(`fake: ${key} must be a non-negative integer`);
+    options[key] = value;
+  }
   const dir = raw["dir"];
   if (dir !== undefined) {
     if (typeof dir !== "string" || dir === "") throw new Error("fake: dir must be a non-empty string");
@@ -72,9 +84,15 @@ export class FakeBackend implements Backend {
   readonly #memory = new Map<string, FakeRun>();
   /** How many progress updates a run has already handed out, per run id, for this instance. */
   readonly #delivered = new Map<string, number>();
+  /** Test hook: the next this many `start` calls throw `BackendUnavailableError`. */
+  unavailableStarts: number;
+  /** Test hook: the next this many `find` calls throw `BackendUnavailableError`. */
+  unavailableFinds: number;
 
   constructor(options: FakeOptions = {}) {
     this.#options = options;
+    this.unavailableStarts = options.unavailableStarts ?? 0;
+    this.unavailableFinds = options.unavailableFinds ?? 0;
   }
 
   /** Every run recorded under `dir`, oldest first. */
@@ -99,6 +117,10 @@ export class FakeBackend implements Backend {
 
   async start(task: RunTask, signal: AbortSignal): Promise<string> {
     signal.throwIfAborted();
+    if (this.unavailableStarts > 0) {
+      this.unavailableStarts -= 1;
+      throw new BackendUnavailableError("fake: platform unavailable");
+    }
     const label = task.labels["fake"] ?? this.#options.behavior ?? "succeed";
     if (!isBehavior(label)) throw new Error(`fake: unknown behavior "${label}"`);
     const run: FakeRun = {
@@ -115,6 +137,10 @@ export class FakeBackend implements Backend {
   }
 
   async find(task: RunTask, hint: string | null): Promise<string | null> {
+    if (this.unavailableFinds > 0) {
+      this.unavailableFinds -= 1;
+      throw new BackendUnavailableError("fake: platform unavailable");
+    }
     // A canceled run is over; a new claimant starts fresh rather than re-attach to it.
     const live = (await this.#all()).filter((run) => run.taskId === task.id && run.canceledAt === undefined);
     if (hint !== null && live.some((run) => run.id === hint)) return hint;

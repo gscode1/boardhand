@@ -338,4 +338,81 @@ describe("worker scenarios", () => {
     for (const id of ids) expect(counter.count(id)).toBe(1);
     expect(counter.max).toBe(1);
   });
+
+  describe("an unavailable backend", () => {
+    it(
+      "releases the task, backs off, and completes it once the backend recovers, with one run and no Failed reply",
+      { timeout: 20_000 },
+      async () => {
+        const board = await rig.board();
+        const counter = new SettleCounter();
+        const stateDir = await rig.tmp();
+        const w = await rig.launch(board, {
+          counter,
+          stateDir,
+          fake: { unavailableStarts: 3 },
+          backoff: { baseMs: 50, maxMs: 400 },
+          random: () => 0.5,
+        });
+        const id = await createTask(board, CHANNEL, "while the platform is down");
+        const info = await rig.untilReply(board, id, "Completed:");
+        expect(info.state).toBe("completed");
+        expect(w.fake.starts).toEqual([id]);
+        expect(info.replies.map((r) => r.text)).toEqual([
+          expect.stringMatching(/^Started fake run /),
+          `Completed: fake result for task ${id}`,
+        ]);
+        // Base 50 ms doubling, jitter in the middle: 38, 75, 150.
+        expect(w.logs.events("run.start_unavailable").map((e) => e["retryInMs"])).toEqual([38, 75, 150]);
+        expect(w.logs.events("run.start_unavailable").every((e) => e.level === "warn")).toBe(true);
+        expect(w.logs.events("task.error")).toEqual([]);
+        expect(counter.count(id)).toBe(1);
+        expect(await w.store.list()).toEqual([]);
+      },
+    );
+
+    it("resets the back-off after a successful start", { timeout: 20_000 }, async () => {
+      const board = await rig.board();
+      const w = await rig.launch(board, {
+        fake: { unavailableStarts: 1 },
+        backoff: { baseMs: 50, maxMs: 400 },
+        random: () => 0.5,
+      });
+      const first = await createTask(board, CHANNEL, "first");
+      await rig.untilReply(board, first, "Completed:");
+      w.fake.unavailableStarts = 1;
+      const second = await createTask(board, CHANNEL, "second");
+      await rig.untilReply(board, second, "Completed:");
+      expect(w.logs.events("run.start_unavailable").map((e) => e["retryInMs"])).toEqual([38, 38]);
+    });
+
+    it("treats an unavailable find the same way, without starting a run", { timeout: 20_000 }, async () => {
+      const board = await rig.board();
+      const w = await rig.launch(board, { fake: { unavailableFinds: 1 }, backoff: { baseMs: 50, maxMs: 400 } });
+      const id = await createTask(board, CHANNEL, "find is down");
+      const info = await rig.untilReply(board, id, "Completed:");
+      expect(info.state).toBe("completed");
+      expect(w.logs.events("run.start_unavailable")).toHaveLength(1);
+      expect(w.fake.starts).toEqual([id]);
+      expect(info.replies.some((r) => r.text.startsWith("Failed"))).toBe(false);
+    });
+
+    it("still fails the task on any other start error", { timeout: 20_000 }, async () => {
+      const board = await rig.board();
+      const fake = new FakeBackend();
+      const backend: Backend = {
+        name: "fake",
+        start: () => Promise.reject(new Error("quota exceeded")),
+        find: (task, hint) => fake.find(task, hint),
+        wait: (runId, signal) => fake.wait(runId, signal),
+        cancel: (runId) => fake.cancel(runId),
+      };
+      const w = await rig.launch(board, { backend });
+      const id = await createTask(board, CHANNEL, "cannot start");
+      const info = await rig.untilReply(board, id, "Failed:");
+      expect(info.state).toBe("failed");
+      expect(info.reason).toBe("worker error: quota exceeded");
+      expect(w.logs.events("run.start_unavailable")).toEqual([]);
+    });
+  });
 });

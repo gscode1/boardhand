@@ -22,6 +22,7 @@ takes one task at a time. Terms are those of [plan.md](../plan.md); the reasons 
    label on the thread (replies win over the root post, later over earlier). It calls `backend.find(task, hint)`.
    - If the backend returns a run, the worker re-attaches: it stores the run id and replies
      `Re-attached to <backend> run <id>` with the label `boardhand.run=<id>`.
+   - If it throws `BackendUnavailableError`, see Backend unavailable below.
    - If it returns null, the worker calls `backend.start`. The run id is stored, then the worker replies
      `Started <backend> run <id>` with the label `boardhand.run=<id>`. The reply comes before the first wait, so a
      crash after it re-attaches instead of starting a second run.
@@ -65,11 +66,34 @@ On start the worker takes each stored claim and calls `board.held` with its proo
 Without a state dir, nothing is stored. The claim lapses at the end of its lease, another claim takes the task, and the
 run label on the thread re-attaches it. The cost is a delay of up to one lease, not a second run.
 
+## Backend unavailable
+
+A backend signals that it cannot be reached, or says to try later (network error, timeout, 429, 5xx), by throwing
+`BackendUnavailableError` from `start` or `find` ([ADR 0003](decisions/0003-backend-interface.md)). When that happens
+before any run exists, the task is not failed. The worker:
+
+1. logs `run.start_unavailable` (warn) with `retryInMs`;
+2. releases the task, so it is ready again for any worker, and removes the stored claim;
+3. does not settle it and does not reply on the thread, so an outage does not fill threads with messages;
+4. makes that claim loop wait before its next claim, with the usual backoff growing on each consecutive failure. A
+   successful start resets it.
+
+A `find` that cannot be answered gets the same treatment, because starting blindly could create a second run. Any other
+error from `start` is a worker error and fails the task (see Errors). `BackendUnavailableError` from `wait` is not
+special: the wait-error rule below applies.
+
 ## Backoff
 
 Retries use exponential backoff: 250 ms doubling to 30 s, with jitter between half and all of each step. It applies to
-failed claim calls (`claim.error`), resume (`resume.error`), board calls during a task (`board.unreachable`), renew
+failed claim calls (`claim.error`), an unavailable backend (`run.start_unavailable`), resume (`resume.error`), board calls during a task (`board.unreachable`), renew
 (`renew.error`), `backend.wait` errors, and the final reply. A success resets it.
+
+## Entrypoint: the board is not up yet
+
+`main.ts` makes the first board request before it starts the worker. While that fails as unreachable (no connection,
+429, 5xx), it logs `board.unreachable` with `retryInMs` and retries with the same backoff (250 ms doubling to 30 s,
+jitter), so a pod that starts before the board does not crash-loop. SIGTERM or SIGINT during the wait exits 0 at once.
+Any other error, such as a refused token (401), logs `fatal` and exits 1. Bad configuration still exits 2.
 
 ## Errors
 

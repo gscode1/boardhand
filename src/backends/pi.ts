@@ -1,6 +1,7 @@
 // The pi-durable-k8s backend: a run is one session of its session API. `start` creates the session and posts the task
 // as its first message, `wait` follows the session's event stream until the agent is idle (or a failure), and `cancel`
 // stops and deletes it. It knows nothing of the board (ADR 0003); docs/backends/pi.md describes the protocol.
+import { BackendUnavailableError } from "./backend.js";
 import type { Backend, RunTask, RunUpdate } from "./backend.js";
 import { PiApi, PiError, isSessionId } from "./pi-api.js";
 import type { CreateSessionBody, SessionSummary } from "./pi-api.js";
@@ -145,15 +146,19 @@ export class PiBackend implements Backend {
     const branch = task.labels["branch"];
     if (branch !== undefined && branch !== "") body.branch = branch;
 
-    const sessionId = await this.#api.createSession(body, signal);
     try {
-      // Task text is untrusted input: it goes in as the message and nowhere else.
-      await this.#postMessage(sessionId, task.text, signal);
+      const sessionId = await this.#api.createSession(body, signal);
+      try {
+        // Task text is untrusted input: it goes in as the message and nowhere else.
+        await this.#postMessage(sessionId, task.text, signal);
+      } catch (error) {
+        await this.#api.deleteSession(sessionId).catch(() => undefined);
+        throw error;
+      }
+      return sessionId;
     } catch (error) {
-      await this.#api.deleteSession(sessionId).catch(() => undefined);
-      throw error;
+      throw unavailableOrSame(error);
     }
-    return sessionId;
   }
 
   async find(_task: RunTask, hint: string | null): Promise<string | null> {
@@ -165,7 +170,7 @@ export class PiBackend implements Backend {
       return session.status === "active" || session.status === "failed" ? hint : null;
     } catch (error) {
       if (error instanceof PiError && (error.status === 404 || error.status === 410)) return null;
-      throw error;
+      throw unavailableOrSame(error);
     }
   }
 
@@ -453,4 +458,11 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
     }, ms);
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+/** A transient session API failure becomes `BackendUnavailableError`, so the worker retries the task; the rest stays. */
+function unavailableOrSame(error: unknown): unknown {
+  return error instanceof PiError && error.transient
+    ? new BackendUnavailableError(error.message, { cause: error })
+    : error;
 }

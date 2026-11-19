@@ -80,7 +80,8 @@ Main events:
 | `task.completed` / `task.failed` | info | The task was settled. |
 | `task.released` | info | A task whose run had not started was handed back on shutdown. |
 | `claim.lost` | warn | The claim is over; the run is canceled and nothing is settled. |
-| `claim.error`, `resume.error`, `renew.error`, `board.unreachable` | warn | The board did not answer; the call is retried with backoff. |
+| `claim.error`, `resume.error`, `renew.error`, `board.unreachable` | warn | The board did not answer; the call is retried with backoff. At start, before the worker runs, it has `retryInMs` and no `taskId`. |
+| `run.start_unavailable` | warn | The backend was unavailable at `start` or `find`; the task was released and the loop backs off. Has `retryInMs`. |
 | `run.wait_error`, `reply.error`, `release.error` | warn | A backend wait, a reply or a release failed. |
 | `task.error` | error | A worker error on a task; the task is failed. |
 | `run.cancel_error`, `renew.crashed`, `loop.crashed`, `task.fail_error` | error | An unexpected failure inside the worker. |

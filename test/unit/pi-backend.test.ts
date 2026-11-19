@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, test } from "vitest";
-import type { RunTask } from "../../src/backends/backend.js";
+import { BackendUnavailableError, type RunTask } from "../../src/backends/backend.js";
 import { createBackend } from "../../src/backends/index.js";
 import { BackendOptionsError, PiBackend, PiError, parsePiOptions } from "../../src/backends/pi.js";
 import { FakePi, type PiScript } from "../helpers/fake-pi.js";
@@ -174,11 +174,13 @@ describe("find", () => {
     expect(await b.find(task(), id)).toBeNull();
   });
 
-  test("lets a 5xx and a bad token propagate", { timeout: 10_000 }, async () => {
+  test("signals a 5xx as unavailable and lets a bad token propagate", { timeout: 10_000 }, async () => {
     const pi = await fakePi();
     const id = await backend(pi).start(task(), live());
     pi.unavailableFor(60_000);
-    await expect(backend(pi).find(task(), id)).rejects.toMatchObject({ status: 503 });
+    await expect(backend(pi).find(task(), id)).rejects.toMatchObject({
+      cause: { status: 503 },
+    });
     const wrong = new PiBackend(parsePiOptions({ url: pi.url }), "wrong-token-value");
     pi.unavailableFor(0);
     await expect(wrong.find(task(), id)).rejects.toMatchObject({ status: 401 });
@@ -401,8 +403,124 @@ describe("token handling", () => {
 
   test("a connection failure names no URL", { timeout: 10_000 }, async () => {
     const b = new PiBackend(parsePiOptions({ url: "http://127.0.0.1:1/secret-path" }), "tok");
-    const error = (await b.start(task(), live()).catch((e: unknown) => e)) as PiError;
-    expect(error).toBeInstanceOf(PiError);
+    const error = (await b.start(task(), live()).catch((e: unknown) => e)) as Error;
+    expect(error).toBeInstanceOf(BackendUnavailableError);
     expect(error.message).not.toContain("secret-path");
+    expect((error.cause as Error).message).not.toContain("secret-path");
+  });
+});
+
+/** A raw server for answers FakePi does not give: a fixed status, or no answer at all. Returns its URL. */
+async function rawServer(respond: (res: import("node:http").ServerResponse) => void): Promise<string> {
+  const server = createServer((_req, res) => {
+    respond(res);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  cleanups.push(async () => {
+    await new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+      server.closeAllConnections();
+    });
+  });
+  return `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+}
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  await Promise.all(cleanups.splice(0).map((fn) => fn()));
+});
+
+describe("transient errors", () => {
+  const at = (url: string, requestTimeoutMs = 5000): PiBackend =>
+    new PiBackend(parsePiOptions({ url, requestTimeoutMs }), "token-value");
+
+  test.each([429, 500, 502, 503])(
+    "start maps a %i on create to BackendUnavailableError",
+    { timeout: 10_000 },
+    async (status) => {
+      const url = await rawServer((res) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "later" }));
+      });
+      const error: unknown = await at(url)
+        .start(task(), live())
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(BackendUnavailableError);
+      expect((error as Error).cause).toBeInstanceOf(PiError);
+    },
+  );
+
+  test("start maps a network error to BackendUnavailableError", { timeout: 10_000 }, async () => {
+    const server = createServer();
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const url = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    await new Promise<void>((resolve) =>
+      server.close(() => {
+        resolve();
+      }),
+    );
+    await expect(at(url).start(task(), live())).rejects.toBeInstanceOf(BackendUnavailableError);
+  });
+
+  test("start maps a timeout to BackendUnavailableError", { timeout: 10_000 }, async () => {
+    const url = await rawServer(() => undefined); // never answers
+    await expect(at(url, 1000).start(task(), live())).rejects.toThrow(BackendUnavailableError);
+  });
+
+  test(
+    "start maps a 429 on the message post to BackendUnavailableError and deletes the session",
+    { timeout: 10_000 },
+    async () => {
+      const pi = await fakePi();
+      pi.eventsStatus = 429;
+      await expect(backend(pi).start(task(), live())).rejects.toBeInstanceOf(BackendUnavailableError);
+      expect([...pi.sessions.values()][0]?.gone).toBe(true);
+    },
+  );
+
+  test(
+    "start maps a 5xx on the message post, after its retries, to BackendUnavailableError",
+    { timeout: 10_000 },
+    async () => {
+      const pi = await fakePi();
+      pi.eventsStatus = 503;
+      await expect(backend(pi).start(task(), live())).rejects.toBeInstanceOf(BackendUnavailableError);
+    },
+  );
+
+  test.each([400, 401, 403, 404, 409])("start keeps a %i a plain PiError", { timeout: 10_000 }, async (status) => {
+    const url = await rawServer((res) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "no" }));
+    });
+    const error: unknown = await at(url)
+      .start(task(), live())
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PiError);
+    expect(error).not.toBeInstanceOf(BackendUnavailableError);
+  });
+
+  test("find maps a 5xx to BackendUnavailableError but keeps a bad token a PiError", { timeout: 10_000 }, async () => {
+    const pi = await fakePi();
+    const id = await backend(pi).start(task(), live());
+    pi.unavailableFor(60_000);
+    await expect(backend(pi).find(task(), id)).rejects.toBeInstanceOf(BackendUnavailableError);
+    pi.unavailableFor(0);
+    const wrong = new PiBackend(parsePiOptions({ url: pi.url }), "wrong-token-value");
+    const error: unknown = await wrong.find(task(), id).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(PiError);
+    expect(error).not.toBeInstanceOf(BackendUnavailableError);
+  });
+
+  test("the error message never carries the token", { timeout: 10_000 }, async () => {
+    const url = await rawServer((res) => {
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "token-value leaked" }));
+    });
+    const error = await at(url)
+      .start(task(), live())
+      .catch((e: unknown) => e as Error);
+    expect((error as Error).message).not.toContain("token-value");
   });
 });
