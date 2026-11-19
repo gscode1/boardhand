@@ -48,7 +48,7 @@ Every variable, its range, the fake backend's options, the exit codes and the lo
 | Backend | Status | Isolation | Credentials |
 |---|---|---|---|
 | fake | built (phase 1), for tests | none | none |
-| [pi-durable-k8s](https://github.com/gscode1/pi-durable-k8s) | planned, first | gVisor sandbox per session, run by the platform | model keys stay in its orchestrator; the worker holds a session-API token |
+| [pi-durable-k8s](https://github.com/gscode1/pi-durable-k8s) ([docs](docs/backends/pi.md)) | implemented, first | gVisor sandbox per session, run by the platform | model keys stay in its orchestrator; the worker holds a session-API token |
 | Claude Code, Codex, other CLIs | later | one Kubernetes Job per run | per-backend Secret mounted into the Job only |
 
 ## Not affiliated
