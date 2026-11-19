@@ -2,6 +2,7 @@
 // Entrypoint: one worker for one route, configured from the environment. Exit 2 on bad config, 0 after a clean stop.
 import { connectBoard } from "./board.js";
 import { createBackend } from "./backends/index.js";
+import type { Backend } from "./backends/backend.js";
 import { ClaimStore } from "./claims.js";
 import { RouteError, describeRoute, loadRoute } from "./route.js";
 import type { Route } from "./route.js";
@@ -14,17 +15,18 @@ function log(entry: LogEntry): void {
 
 async function main(): Promise<void> {
   let route: Route;
+  let backend: Backend;
   try {
     route = loadRoute();
+    // Backend options are config too: a bad one must fail fast with the same exit code as a bad route.
+    backend = createBackend(route.backend, route.backendOptions);
   } catch (error) {
-    if (error instanceof RouteError) {
-      log({ level: "error", event: "config.invalid", problems: error.problems });
-      process.exit(2);
-    }
-    throw error;
+    const problems =
+      error instanceof RouteError ? error.problems : [error instanceof Error ? error.message : String(error)];
+    log({ level: "error", event: "config.invalid", problems });
+    process.exit(2);
   }
   log({ level: "info", event: "route", route: describeRoute(route) });
-  const backend = createBackend(route.backend, route.backendOptions);
   const board = await connectBoard({ url: route.boardUrl, token: route.boardToken, profile: route.profile });
   const worker = await startWorker({ route, board, backend, store: new ClaimStore(route.stateDir), log });
   const shutdown = (signal: string): void => {

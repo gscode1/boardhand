@@ -42,7 +42,7 @@ We chose option (b): **keep each claim's proof and use `tasks.held()` after a re
 - The worker writes `{ taskId, epoch, token }` for each claim it holds to a claim store in `BOARDHAND_STATE_DIR`: one file
   per task, named by a hash of the task id, mode 0600 in a 0700 directory, written atomically, removed when the claim
   ends. The token is never logged.
-- On start, before it claims anything, the worker renews each stored claim with `tasks.held()`. A claim that is over is
+- On start, each claim loop first renews one stored claim with `tasks.held()`. A claim that is over is
   dropped. A live one continues on the re-attach path above, so a restarted process resumes its runs at once without a
   second `backend.start`.
 - In Kubernetes the store is an `emptyDir`: it survives a container restart (a crash) in the same pod, not a reschedule.

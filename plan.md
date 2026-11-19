@@ -1,6 +1,6 @@
 # boardhand: board tasks to coding-agent backends
 
-Status: design, 2026-11-19. Nothing is built yet.
+Status: phase 1 (worker core with a fake backend) built, 2026-11-19.
 
 ## 1. Goal
 
