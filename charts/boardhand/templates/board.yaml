@@ -1,0 +1,118 @@
+{{- if .Values.board.enabled }}
+{{- $name := include "boardhand.boardName" . }}
+{{- $secret := required "board.tokens.existingSecret is required: the Secret that holds the tokens file" .Values.board.tokens.existingSecret }}
+{{- $ctx := dict "root" . "component" "board" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+# The board calls no Kubernetes API.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  selector:
+    {{- include "boardhand.selectorLabels" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: 8080, targetPort: http }
+---
+# One replica on a PVC, never more: the engine's local backend is SQLite, a single-writer store (ADR 0005). A
+# StatefulSet replaces the pod by stopping it before starting the next, so two pods never share the volume.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  serviceName: {{ $name }}
+  selector:
+    matchLabels:
+      {{- include "boardhand.selectorLabels" $ctx | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "boardhand.labels" $ctx | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.board.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- include "boardhand.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: board
+          image: {{ include "boardhand.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "dist/server/main.js"]
+          env:
+            - { name: PORT, value: "8080" }
+            - { name: BOARD_DATA_DIR, value: /data }
+            - { name: BOARD_PUBLIC_URL, value: {{ include "boardhand.boardUrl" . | quote }} }
+            - { name: BOARD_TOKENS_FILE, value: {{ printf "/etc/boardhand/%s" .Values.board.tokens.key | quote }} }
+            - { name: BOARD_STALE_CHECK_SECONDS, value: {{ .Values.board.stale.checkSeconds | int | quote }} }
+            - { name: BOARD_STALE_AFTER_SECONDS, value: {{ .Values.board.stale.afterSeconds | int | quote }} }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.board.resources | nindent 12 }}
+          securityContext:
+            {{- include "boardhand.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: tmp, mountPath: /tmp }
+            - { name: tokens, mountPath: /etc/boardhand, readOnly: true }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: tokens
+          secret:
+            secretName: {{ $secret | quote }}
+            # fsGroup 10001 reads it; nobody else does.
+            defaultMode: 0440
+      {{- with .Values.board.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.board.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.board.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "boardhand.selectorLabels" $ctx | nindent 10 }}
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.board.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.board.persistence.size | quote }}
+{{- end }}
