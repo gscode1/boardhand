@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+*.log
+*.tsbuildinfo
+.DS_Store
+.remember/
+.claude/worktrees/
+
+# Local board data and deployment overlays
+.board/
+/local/
