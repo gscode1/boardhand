@@ -1,6 +1,6 @@
-# 0004: One run per claim: stable claim token, run id on the thread, cancel on lost claim
+# 0004: One run per claim: kept claim proof, run id on the thread, cancel on lost claim
 
-Status: accepted, 2026-11-19. One part is open (see Open).
+Status: accepted, 2026-11-19. The open point on the claim token was settled in phase 1 (see Claim token).
 
 ## Context
 
@@ -10,8 +10,8 @@ care this starts a second run for the same task, or lets two runs report on one 
 What the board gives (`@vercel/board` 0.52.0 and its spec):
 
 - Every claim raises the task's epoch. A write that carries a claim that is over (released, settled, taken over, past its
-  lease) gets `409 claim_lost` and changes nothing.
-- The spec lets a caller bring the claim's token (`claim` takes `token`), so a restarted process can claim the same task
+  lease) gets `409 claim_lost` and changes nothing. A write on a task that was canceled gets `task_finished`.
+- The spec lets a caller bring the claim's token (`claim` takes `token`), so a restarted process could claim the same task
   again with the same token and get the same claim back.
 - The SDK's `tasks.held(id, { epoch, token })` acts on a claim from another process.
 
@@ -21,22 +21,35 @@ What pi-durable-k8s gives: `POST /sessions` has no idempotency key; follow-up ev
 
 - **Run id on the thread first.** Right after `backend.start` returns, the worker replies `Started <backend> run <id>` with
   the label `boardhand.run=<id>`, before it waits on the run.
-- **Re-attach before starting.** After a claim, the worker looks for a `boardhand.run` label on the thread (and asks
-  `backend.find`). If a run exists, it follows that run instead of starting one.
-- **Lost claim means cancel.** On `409 claim_lost` the worker cancels its run and settles nothing; the new claimant
-  re-attaches or starts fresh.
+- **Re-attach before starting.** After a claim, the worker reads the latest `boardhand.run` label on the thread and passes
+  it to `backend.find(task, hint)`. If the backend confirms a run, the worker follows that run instead of starting one.
+- **Lost claim means cancel.** On `claim_lost` or `task_finished` the worker cancels its run and settles nothing; the next
+  claimant re-attaches or starts fresh. A renew that cannot reach the board is retried until the lease's end; past it the
+  claim counts as lost.
 - **Renew independently.** The lease is renewed every third of its length on a timer, not between backend calls, so a long
   `wait` never lets it lapse.
-- **Shutdown releases.** On SIGTERM the worker stops claiming, releases tasks whose run has not started, and leaves
-  started runs to be re-attached by the next claimant.
+- **Shutdown releases.** On SIGTERM the worker stops claiming, releases tasks whose run has not started, and stops
+  following started runs without cancelling or releasing them. They are picked up again as below.
 
-## Open
+## Claim token
 
-The SDK's `tasks.claim` in 0.52.0 does not take a caller-supplied `token`. Phase 1 decides between:
+The SDK's `tasks.claim` in 0.52.0 takes no caller-supplied `token`, and neither does the engine: the HTTP body of
+`POST /tasks/:id/claim` is `{ lease? }` only (its schema strips anything else), although SPEC.md describes a `token`.
+Option (a), an HMAC-derived token sent over HTTP from `src/board.ts`, therefore cannot work against 0.52.0.
 
-1. Derive the token from the task id (an HMAC with a worker secret) and send this one claim over HTTP from `src/board.ts`
-   (an exception to ADR 0002), or ask upstream to expose it.
-2. Keep each claim's `epoch` and `token` where a restarted worker finds them, and use `tasks.held()`.
+We chose option (b): **keep each claim's proof and use `tasks.held()` after a restart.**
+
+- The worker writes `{ taskId, epoch, token }` for each claim it holds to a claim store in `BOARDHAND_STATE_DIR`: one file
+  per task, named by a hash of the task id, mode 0600 in a 0700 directory, written atomically, removed when the claim
+  ends. The token is never logged.
+- On start, each claim loop first renews one stored claim with `tasks.held()`. A claim that is over is
+  dropped. A live one continues on the re-attach path above, so a restarted process resumes its runs at once without a
+  second `backend.start`.
+- In Kubernetes the store is an `emptyDir`: it survives a container restart (a crash) in the same pod, not a reschedule.
+- Without the store, or when the pod is gone, the claim lapses at the end of its lease, another claim takes the task, and
+  the run label re-attaches. The cost is a delay of up to one lease, not a second run.
+
+If upstream starts accepting a caller token, option (a) removes the store; we would raise it upstream rather than fork.
 
 ## Consequences
 
@@ -44,3 +57,4 @@ The SDK's `tasks.claim` in 0.52.0 does not take a caller-supplied `token`. Phase
   it with an idempotency key on session create; we propose one upstream rather than depend on it.
 - Replies and labels on the thread are the run's record; anyone who can label the thread can change it, so the worker
   treats the label as a hint and checks it with the backend before following it.
+- The claim store holds secrets (claim tokens) on the worker's disk; it lives only as long as the pod.

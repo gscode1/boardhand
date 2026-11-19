@@ -18,8 +18,10 @@ Kanban assumes local worktrees.
 ## Decision
 
 - **One interface.** A backend implements, in outline:
-  - `start(task, options) → runId`: start a run for a claimed task.
-  - `find(task) → runId | null`: a run already started for this task, for re-attaching after a restart (see ADR 0004).
+  - `start(task, signal) → runId`: start a run for a claimed task. Options (profile, size) are given when the backend
+    is created, from the route.
+  - `find(task, hint) → runId | null`: a run already started for this task, for re-attaching after a restart (see ADR
+    0004). `hint` is the run id found on the thread or in the claim store; the backend checks it before trusting it.
   - `wait(runId, signal) → progress | result`: follow the run; returns when there is something to report or it ended.
   - `cancel(runId)`: stop the run.
 - **Provisional until two exist.** The interface is shaped by pi-durable-k8s and revised when the first local-CLI backend
