@@ -1,5 +1,6 @@
 // A route is what one worker serves (ADR 0001). It is read once from the environment and validated up front, so a bad
 // deployment fails at start with every problem listed, not on the first task.
+import { BackendOptionsError, parsePiOptions, piTokenFrom } from "./backends/pi.js";
 
 export type Route = {
   boardUrl: string;
@@ -29,7 +30,7 @@ export class RouteError extends Error {
 }
 
 /** Backends `createBackend` knows; checked here so a typo fails at start. */
-export const KNOWN_BACKENDS: readonly string[] = ["fake"];
+export const KNOWN_BACKENDS: readonly string[] = ["fake", "pi"];
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -80,6 +81,15 @@ export function loadRoute(env: Env = process.env): Route {
     fail(`BOARDHAND_BACKEND "${backend}" is unknown; known: ${KNOWN_BACKENDS.join(", ")}`);
   }
   const backendOptions = parseOptions(text("BOARDHAND_BACKEND_OPTIONS"), fail);
+  if (backend === "pi") {
+    if (piTokenFrom(env) === undefined) fail("PI_TOKEN is required when BOARDHAND_BACKEND is pi");
+    try {
+      parsePiOptions(backendOptions);
+    } catch (error) {
+      if (!(error instanceof BackendOptionsError)) throw error;
+      for (const problem of error.problems) fail(`BOARDHAND_BACKEND_OPTIONS: ${problem}`);
+    }
+  }
   const concurrency = integer("BOARDHAND_CONCURRENCY", 1, 1, 64);
   const leaseSeconds = integer("BOARDHAND_LEASE", 300, 30, 3600);
   const waitSeconds = integer("BOARDHAND_WAIT", 30, 1, 3600);
