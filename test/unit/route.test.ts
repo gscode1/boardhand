@@ -96,4 +96,28 @@ describe("loadRoute", () => {
     expect(described).not.toContain("sk-very-secret");
     expect(described).toContain("apiKey");
   });
+
+  describe("pi backend", () => {
+    const pi = {
+      ...valid,
+      BOARDHAND_BACKEND: "pi",
+      BOARDHAND_BACKEND_OPTIONS: '{"url":"http://pi:8080","profile":"coding"}',
+      PI_TOKEN: "pi-secret-token",
+    };
+
+    test("is a known backend and needs only PI_TOKEN and a url", { timeout: 5000 }, () => {
+      expect(loadRoute(pi).backend).toBe("pi");
+    });
+
+    test(
+      "fails fast without PI_TOKEN, with bad options, and keeps the token out of the description",
+      { timeout: 5000 },
+      () => {
+        expect(() => loadRoute({ ...pi, PI_TOKEN: " " })).toThrow(/PI_TOKEN is required/);
+        expect(() => loadRoute({ ...pi, BOARDHAND_BACKEND_OPTIONS: "{}" })).toThrow(/url is required/);
+        expect(() => loadRoute({ ...pi, BOARDHAND_BACKEND_OPTIONS: '{"url":"http://x","typo":1}' })).toThrow(/typo/);
+        expect(JSON.stringify(describeRoute(loadRoute(pi)))).not.toContain("pi-secret-token");
+      },
+    );
+  });
 });
