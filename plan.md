@@ -1,6 +1,6 @@
 # boardhand: board tasks to coding-agent backends
 
-Status: phase 1 (worker core with a fake backend) built, 2026-11-19.
+Status: phases 1 and 2 built; phase 3 (deployment) built on branch `7-deployment`, awaiting a cluster deploy, 2026-11-19.
 
 ## 1. Goal
 
@@ -105,6 +105,11 @@ Status: built on branch `3-phase-1-worker`. The code is in `src/`; the tests are
 
 ### Phase 3: Deployment
 
+Status: built on branch `7-deployment`; not yet deployed to a cluster. See [docs/deployment.md](docs/deployment.md) and
+[ADR 0005](docs/decisions/0005-board-server.md). The board server is `server/`, the image is `Dockerfile`, the chart is
+`charts/boardhand/`. Worker grants are done by the server forcing `x-board-can` per worker token, not by engine grants
+(a host-verified non-person principal cannot be matched by a grant). Pi workers are not yet checked on a cluster.
+
 - Helm chart: the board (StatefulSet, PVC, token Secret, our auth hook) and N workers from a `routes:` list.
 - Pod Security `restricted`, no ServiceAccount token for pi workers, egress only to the board and the backend.
 - Alert or status line for tasks ready longer than a threshold (a task no route matches).
@@ -118,6 +123,8 @@ Status: built on branch `3-phase-1-worker`. The code is in `src/`; the tests are
 
 - Postgres backend for the board, behind its `Backend` interface, checked with the conformance kit (a candidate upstream
   contribution).
+- Real engine grants for workers (today the board server narrows each worker with `x-board-can`, ADR 0005), and a
+  per-worker token rotation story (today: edit the Secret and restart).
 - Board identity per run (today all runs of a worker share its board token; the profile header is not verified).
 - Budgets and cost labels, roles (plan / work / review) as in `templates/swarm`.
 
@@ -161,9 +168,15 @@ src/
     index.ts        createBackend: picks a backend by name
     fake.ts         scriptable backend for tests
     pi.ts           pi-durable-k8s session API client
-test/
-charts/boardhand/
+server/             the board server, a separate program (ADR 0005)
+  main.ts           entrypoint; app.ts wires the engine, auth.ts tokens and worker scopes, http.ts node:http,
+                    stale.ts the stale-task check, config.ts environment
+test/               unit, worker, e2e and test/server/ tests
+Dockerfile          one image, two entrypoints (worker, board)
+.github/workflows/  check.yml (build, test, chart lint), image.yml (ghcr.io push)
+charts/boardhand/   Helm chart; examples/c2.yaml is the lab values
 docs/decisions/
 docs/configuration.md
+docs/deployment.md
 docs/worker.md
 ```

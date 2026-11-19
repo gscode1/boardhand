@@ -3,7 +3,7 @@
 Workers that take tasks from a self-hosted [vercel/board](https://github.com/vercel/board) and run each one on a
 coding-agent backend.
 
-Status: phase 1. The worker core is built and runs against a fake backend; the pi-durable-k8s backend is next. See
+Status: phase 3. The worker core, the pi-durable-k8s backend, the board server, the image and the Helm chart are built. See
 [plan.md](plan.md) and [docs/decisions](docs/decisions).
 
 ## What it does
@@ -42,6 +42,18 @@ pnpm build && node dist/main.js
 
 Every variable, its range, the fake backend's options, the exit codes and the log format are in
 [docs/configuration.md](docs/configuration.md).
+
+## Deploy
+
+One image runs either program (`node dist/main.js`, the worker, or `node dist/server/main.js`, the board), and one Helm
+chart installs the board (StatefulSet and PVC) and a worker Deployment per route, under Pod Security `restricted` and
+NetworkPolicies:
+
+```
+helm upgrade --install boardhand charts/boardhand -n boardhand -f charts/boardhand/examples/c2.yaml
+```
+
+Secrets, posting a task, logs, upgrades and backups are in [docs/deployment.md](docs/deployment.md).
 
 ## Backends
 

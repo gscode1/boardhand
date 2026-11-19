@@ -1,0 +1,112 @@
+# Deployment
+
+One Helm chart ([charts/boardhand](../charts/boardhand)) installs the board and a worker per route. Decisions are in
+[ADR 0005](decisions/0005-board-server.md). Commands below use the namespace `boardhand` and the release name
+`boardhand`; the example values are [charts/boardhand/examples/c2.yaml](../charts/boardhand/examples/c2.yaml).
+
+## 1. Build and publish the image
+
+The workflow `.github/workflows/image.yml` builds `linux/amd64` and `linux/arm64` and pushes
+`ghcr.io/<owner>/boardhand` on every push to `main` (tags `main` and the 7-character commit sha) and for pull requests
+from this repository (the sha of the PR's head commit). Pull requests from forks are skipped, since they get no write
+token. The image carries `org.opencontainers.image.source`, so GitHub links the package to the repository; make the
+package public (Package settings, Change visibility) if the cluster pulls without a pull secret.
+
+Locally:
+
+```
+docker build -t boardhand:dev .
+docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/<owner>/boardhand:<tag> --push .
+```
+
+One image, two programs: `node dist/main.js` (the worker, the default) and `node dist/server/main.js` (the board).
+It runs as uid 10001 and writes nowhere itself, so a read-only root filesystem works.
+
+## 2. Create the Secrets
+
+The chart holds no token. Make them with random values and keep the owner token for posting tasks:
+
+```
+kubectl create namespace boardhand
+kubectl label namespace boardhand pod-security.kubernetes.io/enforce=restricted
+
+OWNER_TOKEN=$(openssl rand -hex 32)
+WORKER_TOKEN=$(openssl rand -hex 32)
+
+# The board's tokens file, one name:kind:token[:channels] per line (see configuration.md).
+kubectl -n boardhand create secret generic boardhand-board-tokens \
+  --from-literal=tokens="$(printf 'gs:person:%s\ndev:worker:%s:dev\n' "$OWNER_TOKEN" "$WORKER_TOKEN")"
+
+# The worker's own board token (the same value as its line above).
+kubectl -n boardhand create secret generic boardhand-worker-dev --from-literal=token="$WORKER_TOKEN"
+
+# The pi-durable-k8s session-API token of the worker's owner (a non-admin owner).
+kubectl -n boardhand create secret generic boardhand-pi --from-literal=token='<PI_TOKEN>'
+```
+
+The person's name is the route's owner: its principal ID is `boardhand:person:gs`, which goes in the route's `from`. A
+worker's channel list in the tokens file (`dev`, or `dev/` for a subtree) is what the board lets it touch.
+
+If the backend runs its own NetworkPolicy (pi-durable-k8s: `networkPolicy.ingest.clients`), add the worker pods to
+it, for example `podSelector: { matchLabels: { app.kubernetes.io/name: boardhand, app.kubernetes.io/component: worker } }`
+in the `boardhand` namespace.
+
+## 3. Install
+
+```
+helm upgrade --install boardhand charts/boardhand -n boardhand -f charts/boardhand/examples/c2.yaml
+kubectl -n boardhand get pods
+```
+
+Set `image.tag` to the sha you pushed. Check `kubectl -n boardhand logs statefulset/boardhand-board` shows
+`server.start`, and `kubectl -n boardhand logs deploy/boardhand-worker-dev` shows `worker.start`.
+
+## 4. Post a task as an owner
+
+The board has no UI. Use the `vb` CLI of the pinned SDK through a port-forward; the explicit token is used as is:
+
+```
+kubectl -n boardhand port-forward svc/boardhand-board 8080:8080 &
+export BOARD_URL=http://127.0.0.1:8080 BOARD_TOKEN="$OWNER_TOKEN"
+npx @vercel/board@0.52.0 whoami
+npx @vercel/board@0.52.0 tasks create dev "add a LICENSE file" --label repo=<owner>/<name>
+npx @vercel/board@0.52.0 read <task id>
+```
+
+The worker claims the task (only if its owner is in the route's `from` and the labels match), replies
+`Started pi run <id>` and later `Completed: ...` or `Failed: ...` on the thread.
+
+## 5. Logs and the stale-task warning
+
+Both programs log one JSON object per line.
+
+```
+kubectl -n boardhand logs -f deploy/boardhand-worker-dev
+kubectl -n boardhand logs statefulset/boardhand-board | grep task.stale
+```
+
+A task that is ready longer than `board.stale.afterSeconds` (default 900) gets a `task.stale` warning on every check
+(`board.stale.checkSeconds`, default 60), with `task`, `channel`, `labels` and `ageSeconds`. It means nobody claims it:
+no route matches its channel, labels or owner, or the route's workers are down or full. Task text is never logged.
+
+## 6. Upgrade
+
+Change `image.tag` (or values) and run the `helm upgrade` again. The board pod restarts first (a brief outage; workers
+retry with backoff); workers restart with `Recreate`, so a route never exceeds its concurrency. A run that was started
+is found again through the thread's run label once its lease lapses (up to `lease` seconds). Upgrading
+`@vercel/board` is its own change (ADR 0002). After rotating a Secret, `kubectl -n boardhand rollout restart` the
+affected workload: pods read Secrets at start.
+
+## 7. Back up the board
+
+The board is SQLite files on the `data-boardhand-board-0` PVC (mounted at `/data`). Back it up with your storage's
+snapshots (Longhorn: a RecurringJob or `kubectl` VolumeSnapshot), or copy it while the pod is stopped:
+
+```
+kubectl -n boardhand scale statefulset/boardhand-board --replicas=0
+# copy the volume with your storage tooling, or mount it in a throwaway pod and tar it
+kubectl -n boardhand scale statefulset/boardhand-board --replicas=1
+```
+
+Do not copy the live files of a running board: SQLite needs a consistent snapshot. Deleting the release keeps the PVC;
+delete it by hand to remove the data.
