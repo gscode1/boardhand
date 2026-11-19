@@ -499,8 +499,9 @@ export function startWorker(options: WorkerOptions): Promise<Worker> {
   return worker.start().then(() => worker);
 }
 
-/** At most `max` characters, the last one "…" when cut. */
+/** At most `max` characters, the last one "…" when cut. Never empty: the board refuses an empty result or reason. */
 function clip(text: string, max = TEXT_MAX): string {
+  if (text.trim() === "") return "(no text)";
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
