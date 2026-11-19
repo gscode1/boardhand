@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@vercel/board@0.52.0'
