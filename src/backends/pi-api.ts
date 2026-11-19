@@ -5,9 +5,12 @@ export class PiError extends Error {
   readonly status: number;
   /** From a `Retry-After` header, in milliseconds, when the server sent one. */
   readonly retryAfterMs: number | undefined;
+  /** The request may succeed later: no answer (network error, timeout), 429 or 5xx. A 4xx is permanent. */
+  readonly transient: boolean;
 
-  constructor(status: number, message: string, retryAfterMs?: number) {
+  constructor(status: number, message: string, retryAfterMs?: number, transient = status === 429 || status >= 500) {
     super(message);
+    this.transient = transient;
     this.name = "PiError";
     this.status = status;
     this.retryAfterMs = retryAfterMs;
@@ -179,6 +182,8 @@ export class PiApi {
       throw new PiError(
         0,
         ownTimeout.aborted ? "session API request timed out" : `session API request failed${detail}`,
+        undefined,
+        true,
       );
     }
   }

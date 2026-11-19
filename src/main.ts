@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // Entrypoint: one worker for one route, configured from the environment. Exit 2 on bad config, 0 after a clean stop.
-import { connectBoard } from "./board.js";
+import { Backoff, sleep } from "./backoff.js";
+import { connectBoard, isUnreachable } from "./board.js";
+import type { Board } from "./board.js";
 import { createBackend } from "./backends/index.js";
 import type { Backend } from "./backends/backend.js";
 import { ClaimStore } from "./claims.js";
 import { RouteError, describeRoute, loadRoute } from "./route.js";
 import type { Route } from "./route.js";
 import { startWorker } from "./worker.js";
+import type { Worker } from "./worker.js";
 import type { LogEntry } from "./worker.js";
 
 function log(entry: LogEntry): void {
@@ -27,19 +30,46 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   log({ level: "info", event: "route", route: describeRoute(route) });
-  const board = await connectBoard({ url: route.boardUrl, token: route.boardToken, profile: route.profile });
-  const worker = await startWorker({ route, board, backend, store: new ClaimStore(route.stateDir), log });
+  let worker: Worker | null = null;
+  const stopping = new AbortController();
   const shutdown = (signal: string): void => {
     log({ level: "info", event: "worker.stopping", signal });
-    void worker.stop().then(() => process.exit(0));
+    stopping.abort();
+    void (worker?.stop() ?? Promise.resolve()).then(() => process.exit(0));
   };
+  // Installed before the first board request, so a stop signal ends the wait for a board that is not up yet.
   process.once("SIGTERM", () => {
     shutdown("SIGTERM");
   });
   process.once("SIGINT", () => {
     shutdown("SIGINT");
   });
+  const board = await connectWhenReachable(route, stopping.signal);
+  if (board === null) return; // a signal arrived while waiting: `shutdown` exits 0
+  worker = await startWorker({ route, board, backend, store: new ClaimStore(route.stateDir), log });
+  if (stopping.signal.aborted) return;
   await worker.finished;
+}
+
+/**
+ * The first board request, retried with the worker's backoff while the board is unreachable (it may still be starting,
+ * and a crash loop would only slow the pod down). Any other error, such as a bad token, ends the process. Null when
+ * `signal` aborted.
+ */
+async function connectWhenReachable(route: Route, signal: AbortSignal): Promise<Board | null> {
+  const backoff = new Backoff({ baseMs: 250, maxMs: 30_000 }, Math.random);
+  while (!signal.aborted) {
+    try {
+      return await connectBoard({ url: route.boardUrl, token: route.boardToken, profile: route.profile });
+    } catch (error) {
+      if (!isUnreachable(error)) throw error;
+      const delay = backoff.next();
+      const text = error instanceof Error ? error.message : String(error);
+      log({ level: "warn", event: "board.unreachable", error: text.slice(0, 300), retryInMs: Math.round(delay) });
+      await sleep(delay, signal);
+    }
+  }
+  return null;
 }
 
 main().catch((error: unknown) => {

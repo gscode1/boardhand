@@ -3,8 +3,11 @@
 // every board and backend call goes through `#call`, so `kill()` can stop a worker the way a crash would.
 import { isClaimOver, isUnreachable } from "./board.js";
 import type { Board, Claim } from "./board.js";
+import { BackendUnavailableError } from "./backends/backend.js";
 import type { Backend, RunTask } from "./backends/backend.js";
 import type { ClaimStore, StoredClaim } from "./claims.js";
+import { Backoff, sleep } from "./backoff.js";
+import type { BackoffOptions } from "./backoff.js";
 import type { Route } from "./route.js";
 
 /** The label that records a task's run on its thread, so a new claimant can re-attach. */
@@ -12,7 +15,7 @@ export const RUN_LABEL = "boardhand.run";
 
 export type LogEntry = { level: "info" | "warn" | "error"; event: string; [field: string]: unknown };
 export type Logger = (entry: LogEntry) => void;
-export type BackoffOptions = { baseMs: number; maxMs: number };
+export type { BackoffOptions } from "./backoff.js";
 
 export type WorkerOptions = {
   route: Route;
@@ -28,6 +31,8 @@ export type WorkerOptions = {
 
 // Replies are capped by the board (10 000 characters); a long result must not turn a finished run into an error.
 const TEXT_MAX = 9000;
+// The board stores a task's result or failure reason (the text given to complete and fail) at up to 1000 characters.
+const NOTE_MAX = 1000;
 const WAIT_ERRORS_MAX = 5;
 const FINAL_REPLY_ATTEMPTS = 3;
 
@@ -111,7 +116,9 @@ export class Worker {
 
   async #loop(resume: StoredClaim | null, repeat: boolean): Promise<void> {
     try {
-      if (resume !== null) await this.#resume(resume);
+      // Grows while the backend is unavailable at start; a successful start resets it.
+      const unavailable = new Backoff(this.#backoff, this.#random);
+      if (resume !== null) await this.#pause(await this.#resume(resume, unavailable));
       const backoff = new Backoff(this.#backoff, this.#random);
       while (repeat && !this.#stopped() && !this.#dead()) {
         let claim: Claim | null;
@@ -139,30 +146,37 @@ export class Worker {
           if (!this.#dead()) await claim.release().catch(() => undefined);
           break;
         }
-        await this.#handle(claim, null);
+        await this.#pause(await this.#handle(claim, null, unavailable));
       }
     } catch (error) {
       if (!(error instanceof Killed)) this.#log({ level: "error", event: "loop.crashed", error: describe(error) });
     }
   }
 
-  /** Re-acquires a stored claim through `held` + `renew`. Claim over means someone else owns the task now: drop it. */
-  async #resume(stored: StoredClaim): Promise<void> {
+  /** Waits out the back-off a task asked for when the backend was unavailable. */
+  async #pause(delayMs: number | null): Promise<void> {
+    if (delayMs !== null) await sleep(delayMs, this.#claiming.signal);
+  }
+
+  /**
+   * Re-acquires a stored claim through `held` + `renew`. Claim over means someone else owns the task now: drop it.
+   * Returns the delay to wait before claiming again, if the task was handed back because the backend is unavailable.
+   */
+  async #resume(stored: StoredClaim, unavailable: Backoff): Promise<number | null> {
     const backoff = new Backoff(this.#backoff, this.#random);
     for (;;) {
-      if (this.#stopped() || this.#dead()) return;
+      if (this.#stopped() || this.#dead()) return null;
       try {
         const claim = await this.#board.held(stored.taskId, { epoch: stored.epoch, token: stored.token });
         await claim.renew(this.#route.leaseSeconds);
         this.#log({ level: "info", event: "claim.resumed", taskId: stored.taskId, epoch: stored.epoch });
-        await this.#handle(claim, stored.runId ?? null);
-        return;
+        return await this.#handle(claim, stored.runId ?? null, unavailable);
       } catch (error) {
         if (!isUnreachable(error)) {
           // Claim over, or the task is gone: nothing to resume. A new claimant re-attaches through the thread's label.
           this.#log({ level: "info", event: "claim.dropped", taskId: stored.taskId, reason: describe(error) });
           if (!this.#dead()) await this.#store.remove(stored.taskId);
-          return;
+          return null;
         }
         const delay = backoff.next();
         this.#log({ level: "warn", event: "resume.error", taskId: stored.taskId, error: describe(error) });
@@ -171,7 +185,8 @@ export class Worker {
     }
   }
 
-  async #handle(claim: Claim, storedRunId: string | null): Promise<void> {
+  /** Returns the delay before the next claim when the task went back to the board unstarted (backend unavailable). */
+  async #handle(claim: Claim, storedRunId: string | null, unavailable: Backoff): Promise<number | null> {
     const t: TaskState = {
       claim,
       task: { id: claim.task.id, channel: claim.task.channel, text: claim.task.text, labels: claim.task.labels },
@@ -187,9 +202,12 @@ export class Worker {
     try {
       await this.#call(() => this.#store.put(this.#stored(t)));
       void this.#renewLoop(t);
-      await this.#drive(t, storedRunId);
+      await this.#drive(t, storedRunId, unavailable);
     } catch (error) {
-      if (error instanceof Killed) return;
+      if (error instanceof Killed) return null;
+      if (error instanceof BackendUnavailableError && !t.started && !t.ctl.signal.aborted && !t.lost) {
+        return await this.#releaseUnavailable(t, error, unavailable);
+      }
       // An abort (lost claim or shutdown) can surface as the backend's own error; it is not a failure of the task.
       if (!(error instanceof Unwind) && !t.ctl.signal.aborted) await this.#failUnexpected(t, error);
       else if (this.#stopped() && !t.lost && !t.settled && !t.started) await this.#releaseUnstarted(t);
@@ -197,9 +215,10 @@ export class Worker {
       t.ctl.abort();
       this.#tasks.delete(t);
     }
+    return null;
   }
 
-  async #drive(t: TaskState, storedRunId: string | null): Promise<void> {
+  async #drive(t: TaskState, storedRunId: string | null, unavailable: Backoff): Promise<void> {
     const hint = storedRunId ?? (await this.#retry(t, () => this.#board.findLabel(t.task.id, RUN_LABEL)));
     const found = await this.#call(() => this.#backend.find(t.task, hint));
     if (found === null) {
@@ -213,6 +232,7 @@ export class Worker {
       t.runId = runId;
       // From here a stop must not release: a run exists.
       t.started = true;
+      unavailable.reset();
       await this.#call(() => this.#store.put(this.#stored(t)));
       this.#log({ level: "info", event: "run.started", taskId: t.task.id, runId: t.runId });
       // Recorded on the thread before the first wait, so a crash from here on re-attaches instead of starting again.
@@ -281,7 +301,9 @@ export class Worker {
     if (t.settled || t.settling) return;
     t.settling = true;
     try {
-      await this.#retry(t, () => (how === "complete" ? t.claim.complete(clip(text)) : t.claim.fail(clip(text))));
+      await this.#retry(t, () =>
+        how === "complete" ? t.claim.complete(clip(text, NOTE_MAX)) : t.claim.fail(clip(text, NOTE_MAX)),
+      );
     } catch (error) {
       t.settling = false;
       throw error;
@@ -388,6 +410,33 @@ export class Worker {
     }
   }
 
+  /**
+   * The backend could not be reached, so no run exists: hand the task back for any worker and drop the stored claim.
+   * Nothing is settled and nothing is said on the thread, so an outage does not fill it with replies. The caller waits
+   * the returned delay, which grows on consecutive failures, before it claims again.
+   */
+  async #releaseUnavailable(t: TaskState, error: BackendUnavailableError, unavailable: Backoff): Promise<number> {
+    t.ctl.abort(); // stop the renew timer: the claim is about to be handed back
+    const delay = unavailable.next();
+    this.#log({
+      level: "warn",
+      event: "run.start_unavailable",
+      taskId: t.task.id,
+      error: describe(error),
+      retryInMs: Math.round(delay),
+    });
+    try {
+      await this.#call(() => t.claim.release());
+      await this.#call(() => this.#store.remove(t.task.id));
+    } catch (second) {
+      // Killed stops here too; a failed release leaves the claim to lapse at the end of its lease.
+      if (!(second instanceof Killed)) {
+        this.#log({ level: "warn", event: "release.error", taskId: t.task.id, error: describe(second) });
+      }
+    }
+    return delay;
+  }
+
   async #releaseUnstarted(t: TaskState): Promise<void> {
     try {
       await t.claim.release();
@@ -450,49 +499,10 @@ export function startWorker(options: WorkerOptions): Promise<Worker> {
   return worker.start().then(() => worker);
 }
 
-class Backoff {
-  readonly #options: BackoffOptions;
-  readonly #random: () => number;
-  #attempt = 0;
-
-  constructor(options: BackoffOptions, random: () => number) {
-    this.#options = options;
-    this.#random = random;
-  }
-
-  /** Exponential, with jitter between half and all of the step so workers do not retry in lockstep. */
-  next(): number {
-    const step = Math.min(this.#options.maxMs, this.#options.baseMs * 2 ** Math.min(this.#attempt, 30));
-    this.#attempt += 1;
-    return step / 2 + (this.#random() * step) / 2;
-  }
-
-  reset(): void {
-    this.#attempt = 0;
-  }
-}
-
-/** Resolves true after `ms`, or false as soon as `signal` aborts. */
-function sleep(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (signal?.aborted === true) {
-      resolve(false);
-      return;
-    }
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      resolve(false);
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve(true);
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
-
-function clip(text: string): string {
-  return text.length <= TEXT_MAX ? text : `${text.slice(0, TEXT_MAX)}…`;
+/** At most `max` characters, the last one "…" when cut. Never empty: the board refuses an empty result or reason. */
+function clip(text: string, max = TEXT_MAX): string {
+  if (text.trim() === "") return "(no text)";
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
 /** An error as a short string for logs. Messages come from the board or the backend, never from our secrets. */

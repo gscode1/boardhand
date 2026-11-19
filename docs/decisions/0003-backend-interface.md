@@ -24,6 +24,8 @@ Kanban assumes local worktrees.
     0004). `hint` is the run id found on the thread or in the claim store; the backend checks it before trusting it.
   - `wait(runId, signal) → progress | result`: follow the run; returns when there is something to report or it ended.
   - `cancel(runId)`: stop the run.
+  - Backends signal transient errors (cannot reach the platform, 429, 5xx) from `start` and `find` with
+    `BackendUnavailableError`; the worker then hands the task back and backs off instead of failing it.
 - **Provisional until two exist.** The interface is shaped by pi-durable-k8s and revised when the first local-CLI backend
   lands. It stays as small as the existing backends need.
 - **Backends know nothing of the board.** The worker turns results into replies and settles the task. A backend module

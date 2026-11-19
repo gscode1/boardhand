@@ -46,7 +46,9 @@ repository or a command.
 1. `start`: `POST /sessions` with the options and labels above, then `POST /sessions/{id}/events` with
    `{ kind: "message", text: <task text>, sourceEventId: "boardhand:<sessionId>:task" }`. The `sourceEventId` makes the
    post safe to retry (it is retried up to three times on a network error or 5xx). If the message cannot be posted the
-   session is deleted (best effort) and `start` fails. The session id is returned as the run id, and the worker records it on
+   session is deleted (best effort) and `start` fails. A network error, timeout, 429 or 5xx (on the create, or on the post
+after its retries) is thrown as `BackendUnavailableError`, so the worker hands the task back and tries again later; a 4xx
+stays a `PiError` and fails the task. The session id is returned as the run id, and the worker records it on
    the thread as `boardhand.run`.
 2. `wait`: follows the session's event stream (`GET /sessions/{id}/stream`, resuming with `Last-Event-ID`) and re-reads
    the session about once a second. The agent counts as finished when the stream says idle, held for 500 ms, and a fresh
@@ -74,7 +76,8 @@ claimant calls `find(task, hint)` with that id:
 - `active` or `failed`: that session is followed. A restarted worker has no stream cursor, so it replays the whole
   stream (the sessions are small) and still ends with the agent's last text.
 
-Network errors and 5xx from `find` propagate; the worker handles them.
+Network errors, timeouts, 429 and 5xx from `find` are thrown as `BackendUnavailableError`; the worker releases the task and
+backs off. Other errors (a bad token) propagate as `PiError`.
 
 The label is a hint anyone with write access to the thread can set. The platform scopes sessions to the token's owner, so
 a foreign session is a 404, but it cannot tie a session to a task. Do not share one owner token between routes that
