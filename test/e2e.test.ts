@@ -1,10 +1,12 @@
 // End to end: the real entrypoint as a child process against a throwaway board and the fake backend.
+import { createServer } from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { FakeBackend } from "../src/backends/fake.js";
 import { ClaimStore } from "../src/claims.js";
 import { RUN_LABEL } from "../src/worker.js";
 import { build, spawnMain, type Child } from "./helpers/child.js";
 import { createTask, waitFor, type TestBoard } from "./helpers/board-server.js";
+import { startFlakyProxy } from "./helpers/flaky-proxy.js";
 import { CHANNEL, Rig } from "./helpers/scenario.js";
 
 const rig = new Rig();
@@ -48,6 +50,20 @@ function start(board: TestBoard, dirs: Dirs, extra: Record<string, string> = {})
 async function setup(): Promise<{ board: TestBoard; dirs: Dirs }> {
   const board = await rig.board();
   return { board, dirs: { dir: await rig.tmp(), stateDir: await rig.tmp() } };
+}
+
+/** A URL nothing listens on: an OS-assigned port that was free a moment ago. */
+async function closedUrl(): Promise<string> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : 0;
+  await new Promise<void>((resolve) =>
+    server.close(() => {
+      resolve();
+    }),
+  );
+  return `http://127.0.0.1:${String(port)}`;
 }
 
 describe("boardhand entrypoint", () => {
@@ -145,5 +161,59 @@ describe("boardhand entrypoint", () => {
     const line = child.lines().find((l) => l["event"] === "config.invalid");
     expect(JSON.stringify(line?.["problems"])).toContain("BOARDHAND_FROM");
     expect(child.output()).not.toContain(board.tokens.worker);
+  });
+
+  describe("board not up yet", () => {
+    it(
+      "retries the first request until the board answers, then claims and completes",
+      { timeout: 40_000 },
+      async () => {
+        const { board, dirs } = await setup();
+        const proxy = await startFlakyProxy(board.url);
+        rig.onDispose(() => proxy.close());
+        proxy.down = true;
+        const child = start(board, dirs, {
+          BOARD_URL: proxy.url,
+          BOARDHAND_BACKEND_OPTIONS: JSON.stringify({ dir: dirs.dir }),
+        });
+        await waitFor(
+          () => child.lines().filter((l) => l["event"] === "board.unreachable").length >= 2,
+          15_000,
+          "two unreachable retries",
+        );
+        for (const line of child.lines().filter((l) => l["event"] === "board.unreachable")) {
+          expect(line["retryInMs"]).toEqual(expect.any(Number));
+          expect(line["retryInMs"]).toBeLessThanOrEqual(30_000);
+        }
+        expect(child.lines().some((l) => l["event"] === "fatal")).toBe(false);
+
+        proxy.down = false;
+        const id = await createTask(board, CHANNEL, "after the board came up");
+        const info = await rig.untilReply(board, id, "Completed:", 25_000);
+        expect(info.state).toBe("completed");
+        expect(child.lines().some((l) => l["event"] === "fatal")).toBe(false);
+      },
+    );
+
+    it("exits 0 promptly on SIGTERM while waiting", { timeout: 30_000 }, async () => {
+      const { board, dirs } = await setup();
+      const child = start(board, dirs, { BOARD_URL: await closedUrl() });
+      await child.untilEvent("board.unreachable", 15_000);
+      const stopped = Date.now();
+      child.signal("SIGTERM");
+      expect(await child.exited).toEqual({ code: 0, signal: null });
+      expect(Date.now() - stopped).toBeLessThan(5000);
+      expect(child.lines().some((l) => l["event"] === "worker.stopping")).toBe(true);
+    });
+
+    it("exits 1 at once on a token the board refuses", { timeout: 30_000 }, async () => {
+      const { board, dirs } = await setup();
+      const child = start(board, dirs, { BOARD_TOKEN: "tok-not-a-real-token" });
+      const started = Date.now();
+      expect(await child.exited).toEqual({ code: 1, signal: null });
+      expect(Date.now() - started).toBeLessThan(10_000);
+      expect(child.lines().some((l) => l["event"] === "fatal")).toBe(true);
+      expect(child.lines().some((l) => l["event"] === "board.unreachable")).toBe(false);
+    });
   });
 });
