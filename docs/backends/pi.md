@@ -117,3 +117,10 @@ PI_URL=http://localhost:8080 PI_TOKEN=... PI_PROFILE=coding pnpm live:pi
 Optional: `PI_REPO`, `PI_BRANCH` (task labels), `PI_TASK` (task text), `PI_TIMEOUT_SECONDS` (default 900),
 `PI_PROGRESS_SECONDS` (default 30), `PI_DELETE=1`. It exits 0 when the task completed and 1 otherwise. For a cluster
 without ingress, port-forward the `pi-ingest` Service first.
+
+## Live check (historical observation)
+
+2026-11-19, lab cluster `c2`, namespace `pi-durable-poc`, through a port-forward to `svc/pi-ingest`, with the lab's
+admin owner token (no non-admin owner exists there yet): `pnpm live:pi` with profile `coding` and `PI_DELETE=1`. The
+worker claimed the task, started session `5528c216-…`, replied `Started pi run <id>` with the run label, followed the
+turn, completed the task with `pong` and replied `Completed: pong`. The session was `deleted` afterwards.
