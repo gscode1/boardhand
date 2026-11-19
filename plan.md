@@ -133,9 +133,8 @@ One task, start to end:
 
 ## 8. Open questions
 
-- Can the SDK take a caller-supplied claim token? The spec allows it (`claim` takes `token`), but `@vercel/board` 0.52.0's
-  `tasks.claim` exposes only `lease` and `signal`. Options: call the HTTP route for this one call, or keep the claim's
-  `epoch` and `token` and use `tasks.held()` after a restart. Decide in phase 1 (ADR 0004).
+- ~~Can the SDK take a caller-supplied claim token?~~ Settled in phase 1: 0.52.0's engine accepts no caller token, so the
+  worker keeps each claim's `epoch` and `token` in a claim store and uses `tasks.held()` after a restart (ADR 0004).
 - Where task progress goes: one reply per turn, or one edited status message.
 - How a person answers a run that needs input: `block` the task and resume the run on unblock, or fail and re-post.
 
