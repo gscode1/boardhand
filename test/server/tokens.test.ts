@@ -59,4 +59,16 @@ describe("createAuth", () => {
     expect(auth.scopeFor(A)).toBeUndefined();
     expect(auth.scopeFor(null)).toBeUndefined();
   });
+
+  it("refuses a worker whose request lacks the scope forced for its own token", { timeout: 5_000 }, async () => {
+    const ask = (credential: string, can: string | null): unknown => {
+      const headers = new Headers(can === null ? {} : { "x-board-can": can });
+      return auth.authenticate({ credential, headers, claims: {}, audience: "x" } as never);
+    };
+    const scope = "dev=read,post,label;review/=read,post,label";
+    await expect(Promise.resolve().then(() => ask(B, null))).rejects.toMatchObject({ status: 403 });
+    await expect(Promise.resolve().then(() => ask(B, "all"))).rejects.toMatchObject({ status: 403 });
+    expect(ask(B, scope)).toMatchObject({ id: "boardhand:worker:dev" });
+    expect(ask(A, null)).toMatchObject({ id: "boardhand:person:gs" });
+  });
 });

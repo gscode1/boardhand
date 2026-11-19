@@ -103,4 +103,56 @@ describe("worker grants", () => {
     expect(claim?.task.id).toBe(task.id);
     await claim?.release();
   });
+
+  it(
+    "never gives a worker unrestricted access, whatever the Authorization header looks like",
+    { timeout: 30_000 },
+    async () => {
+      const r = await rig(["gs:person", "dev:worker:dev"]);
+      const owner = await r.client("gs");
+      const { task } = await owner.tasks.create("ops", { text: "in ops" });
+      const t = r.tokens["dev"] ?? "";
+      const variants = [
+        `Bearer ${t}`,
+        `bearer ${t}`,
+        `BEARER ${t}`,
+        `Bearer  ${t}`,
+        `Bearer   ${t}`,
+        `Bearer\t${t}`,
+        ` Bearer ${t}`,
+        `Bearer ${t} `,
+        `Bearer Bearer ${t}`,
+        `Bearer ${t} Bearer ${t}`,
+        `Basic ${t}`,
+        t,
+      ];
+      for (const authorization of variants) {
+        for (const extra of [{}, { "x-board-can": "all" }, { "X-Board-Can": "ops/=all" }]) {
+          const headers = { authorization, ...extra };
+          const me = await fetch(`${r.url}/me`, { headers });
+          if (me.ok) {
+            const body = (await me.json()) as { can?: Record<string, string[]> };
+            expect(Object.keys(body.can ?? {}), JSON.stringify(headers)).toEqual(["dev"]);
+          }
+          const read = await fetch(`${r.url}/messages/${task.id}`, { headers });
+          expect(read.ok, JSON.stringify(headers)).toBe(false);
+        }
+      }
+    },
+  );
+
+  it("strips a client-sent x-board-can on a person too, so only the token decides", { timeout: 20_000 }, async () => {
+    const r = await rig(["gs:person"]);
+    const response = await fetch(`${r.url}/me`, {
+      headers: { authorization: `Bearer ${r.tokens["gs"] ?? ""}`, "x-board-can": "dev/=read" },
+    });
+    const body = (await response.json()) as { can: Record<string, string[]> };
+    expect(Object.keys(body.can)).toEqual(["*"]);
+  });
+
+  it("refuses a malformed Authorization header with 401", { timeout: 20_000 }, async () => {
+    const r = await rig(["gs:person"]);
+    const response = await fetch(`${r.url}/me`, { headers: { authorization: `Token ${r.tokens["gs"] ?? ""}` } });
+    expect(response.status).toBe(401);
+  });
 });

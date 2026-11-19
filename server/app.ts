@@ -33,10 +33,19 @@ export async function startServer(config: ServerConfig, log: Log, tuning: Server
     port: config.port,
     fetch: (request) =>
       engine.team ? engine.team.fetch(request) : Promise.resolve(new Response("starting", { status: 503 })),
-    // A worker's limits come from its token, never from what it sends.
+    // A worker's limits come from its token, never from what it sends. Fail closed: whatever x-board-can the client
+    // sent is dropped, and an Authorization header we cannot parse is refused rather than passed on, so the engine
+    // never sees a credential that this function did not scope. `authenticate` checks the binding again.
     rewriteHeaders: (headers) => {
-      const scope = auth.scopeFor(bearerOf(headers.get("authorization")));
+      headers.delete("x-board-can");
+      const authorization = headers.get("authorization");
+      if (authorization === null) return undefined;
+      const credential = bearerOf(authorization);
+      if (credential === null)
+        return Response.json({ error: { code: "unauthorized", message: "malformed authorization" } }, { status: 401 });
+      const scope = auth.scopeFor(credential);
       if (scope !== undefined) headers.set("x-board-can", scope);
+      return undefined;
     },
     health: () => accepting,
   });

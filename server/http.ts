@@ -9,8 +9,11 @@ export type HttpOptions = {
   host?: string;
   /** The origin the handler sees on requests (it only builds URLs; the board checks tokens against its own `url`). */
   fetch: (request: Request) => Promise<Response>;
-  /** Called with the incoming headers before the request is built, to force or strip headers the board trusts. */
-  rewriteHeaders?: (headers: Headers) => void;
+  /**
+   * Called with the incoming headers before the request is built, to force or strip headers the board trusts. A
+   * returned Response refuses the request and is sent as is.
+   */
+  rewriteHeaders?: (headers: Headers) => Response | undefined;
   /** Answered before the handler, with no authentication: `GET /healthz`. */
   health?: () => boolean;
 };
@@ -25,14 +28,15 @@ function toRequest(
   req: IncomingMessage,
   origin: string,
   signal: AbortSignal,
-  rewriteHeaders: ((headers: Headers) => void) | undefined,
-): Request {
+  rewriteHeaders: ((headers: Headers) => Response | undefined) | undefined,
+): Request | Response {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
     if (value === undefined) continue;
     for (const v of Array.isArray(value) ? value : [value]) headers.append(name, v);
   }
-  rewriteHeaders?.(headers);
+  const refused = rewriteHeaders?.(headers);
+  if (refused) return refused;
   const method = req.method ?? "GET";
   const init: RequestInit & { duplex?: "half" } = { method, headers, signal };
   if (method !== "GET" && method !== "HEAD") {
@@ -82,8 +86,8 @@ export async function listen(options: HttpOptions): Promise<RunningHttp> {
     res.on("close", () => {
       if (!res.writableFinished) abort.abort();
     });
-    options
-      .fetch(toRequest(req, origin, abort.signal, options.rewriteHeaders))
+    const request = toRequest(req, origin, abort.signal, options.rewriteHeaders);
+    (request instanceof Response ? Promise.resolve(request) : options.fetch(request))
       .then((response) => sendResponse(res, response))
       .catch(() => {
         if (!res.headersSent) res.writeHead(500);

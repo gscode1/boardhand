@@ -36,8 +36,10 @@ the pod. Tokens must be long random strings (`openssl rand -hex 32`).
 **Worker scopes: `x-board-can`, set by the server.** The engine can narrow any caller with an `x-board-can` header
 (`dev/=read,post,label`), which "only narrows" what the principal may do and is meant for a proxy that holds the
 credential. The server is that proxy: for a `worker` token it overwrites the header with the worker's channels and
-`read,post,label` (claim and settle count as `label`; reply is `post`). Whatever the client sends is replaced, so a
-worker cannot widen itself. A test shows a worker claiming, replying and settling in its channel and being refused (403,
+`read,post,label` (claim and settle count as `label`; reply is `post`). The server deletes any client-sent `x-board-can` first and refuses an Authorization header it cannot parse (401); and
+`authenticate` refuses (403) a worker whose request does not carry exactly the scope forced for the credential it
+used, so a parser difference between our bearer parsing and the engine's cannot leave a worker unrestricted. Whatever
+the client sends is replaced, so a worker cannot widen itself. A test shows a worker claiming, replying and settling in its channel and being refused (403,
 or 404 for what it may not read) in another, with and without a hand-sent `x-board-can: all`.
 
 What the engine offers, and why this one (checked in `@vercel/board` 0.52.0, docs and `dist/`):

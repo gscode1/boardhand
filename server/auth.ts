@@ -98,6 +98,10 @@ export type Auth = {
   scopeFor(credential: string | null): string | undefined;
 };
 
+function scopeOf(entry: TokenEntry): string {
+  return entry.channels.map((channel) => `${channel}=${WORKER_PERMISSIONS}`).join(";");
+}
+
 export function createAuth(entries: readonly TokenEntry[]): Auth {
   const hashed = entries.map((entry) => ({ entry, hash: digest(entry.token) }));
   const lookup = (credential: string | null): TokenEntry | undefined => {
@@ -114,12 +118,16 @@ export function createAuth(entries: readonly TokenEntry[]): Auth {
       if (request.credential === null) return null;
       const entry = lookup(request.credential);
       if (entry === undefined) throw new HttpError(401, "unauthorized", "unknown token");
+      // A worker is a `person` to the engine and is narrowed only by x-board-can. Bind that restriction to the
+      // credential used here: unless the forced scope for exactly this credential is on the request, refuse.
+      if (entry.kind === "worker" && request.headers.get("x-board-can") !== scopeOf(entry)) {
+        throw new HttpError(403, "forbidden", "worker scope missing");
+      }
       return { id: principalId(entry), kind: "person", handle: entry.name };
     },
     scopeFor: (credential) => {
       const entry = lookup(credential);
-      if (entry?.kind !== "worker") return undefined;
-      return entry.channels.map((channel) => `${channel}=${WORKER_PERMISSIONS}`).join(";");
+      return entry?.kind === "worker" ? scopeOf(entry) : undefined;
     },
   };
 }
