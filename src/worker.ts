@@ -31,6 +31,8 @@ export type WorkerOptions = {
 
 // Replies are capped by the board (10 000 characters); a long result must not turn a finished run into an error.
 const TEXT_MAX = 9000;
+// The board stores a task's result or failure reason (the text given to complete and fail) at up to 1000 characters.
+const NOTE_MAX = 1000;
 const WAIT_ERRORS_MAX = 5;
 const FINAL_REPLY_ATTEMPTS = 3;
 
@@ -299,7 +301,9 @@ export class Worker {
     if (t.settled || t.settling) return;
     t.settling = true;
     try {
-      await this.#retry(t, () => (how === "complete" ? t.claim.complete(clip(text)) : t.claim.fail(clip(text))));
+      await this.#retry(t, () =>
+        how === "complete" ? t.claim.complete(clip(text, NOTE_MAX)) : t.claim.fail(clip(text, NOTE_MAX)),
+      );
     } catch (error) {
       t.settling = false;
       throw error;
@@ -495,8 +499,9 @@ export function startWorker(options: WorkerOptions): Promise<Worker> {
   return worker.start().then(() => worker);
 }
 
-function clip(text: string): string {
-  return text.length <= TEXT_MAX ? text : `${text.slice(0, TEXT_MAX)}…`;
+/** At most `max` characters, the last one "…" when cut. */
+function clip(text: string, max = TEXT_MAX): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
 /** An error as a short string for logs. Messages come from the board or the backend, never from our secrets. */

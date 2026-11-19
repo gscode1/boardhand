@@ -32,8 +32,10 @@ takes one task at a time. Terms are those of [plan.md](../plan.md); the reasons 
    remove the stored claim and reply `Completed: <result>` or `Failed: <reason>` on the thread. The final reply is tried
    up to 3 times; if it still fails, the task stays settled and the failure is logged.
 
-Text sent to the board (settle text, progress, final reply) is clipped to 9000 characters, with `…` added, because
-the board caps replies at 10 000.
+Text sent to the board is clipped, with the last character `…` when cut. Replies (progress and the final
+`Completed:` / `Failed:` reply) keep up to 9000 characters, because the board caps a message at 10 000. The result or
+reason passed to `complete` / `fail` is clipped to 1000 characters, the board's cap on a task's result and reason, so a
+long answer still settles the task; the final reply on the thread carries the longer text.
 
 ## Lost claim
 

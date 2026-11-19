@@ -112,6 +112,27 @@ describe("worker scenarios", () => {
     expect(counter.count(id)).toBe(1);
   });
 
+  it("settles with a result within the board's cap and replies with the full text", { timeout: 20_000 }, async () => {
+    const board = await rig.board();
+    const long = "x".repeat(5000);
+    const fake = new FakeBackend();
+    const backend: Backend = {
+      name: "fake",
+      start: (task, signal) => fake.start(task, signal),
+      find: (task, hint) => fake.find(task, hint),
+      wait: () => Promise.resolve({ kind: "succeeded", result: long }),
+      cancel: (runId) => fake.cancel(runId),
+    };
+    const w = await rig.launch(board, { backend });
+    const id = await createTask(board, CHANNEL, "long answer");
+    const info = await rig.untilReply(board, id, "Completed:");
+    expect(info.state).toBe("completed");
+    expect(info.result?.length).toBe(1000);
+    expect(info.result?.endsWith("…")).toBe(true);
+    expect(info.replies.at(-1)?.text).toBe(`Completed: ${long}`);
+    expect(w.logs.events("task.error")).toEqual([]);
+  });
+
   it("relays progress updates before completing", { timeout: 20_000 }, async () => {
     const board = await rig.board();
     await rig.launch(board, { fake: { slowMs: 1200 } });
