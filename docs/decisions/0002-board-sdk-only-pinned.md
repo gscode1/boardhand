@@ -30,3 +30,8 @@ Alternatives considered:
 - Upgrades are deliberate and lag upstream.
 - Anything the SDK does not expose (for example a caller-supplied claim token, see ADR 0004) needs either an upstream
   change or a narrowly scoped exception in `src/board.ts`, recorded in an ADR.
+- `@vercel/board` 0.52.0 exports no client constructor, only `board()`, which reaches a remote board through the
+  `BOARD_URL` and `BOARD_TOKEN` environment variables. So `src/board.ts` sets those two variables under a lock while it
+  creates the handle, forces the first request, and restores the previous values. This is a narrow exception to "SDK
+  only", kept in that one module. We raise it upstream (export `http()` or a client constructor) rather than fork; when it
+  lands, the lock goes away.
