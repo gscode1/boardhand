@@ -190,7 +190,8 @@ export class Worker {
       await this.#drive(t, storedRunId);
     } catch (error) {
       if (error instanceof Killed) return;
-      if (!(error instanceof Unwind)) await this.#failUnexpected(t, error);
+      // An abort (lost claim or shutdown) can surface as the backend's own error; it is not a failure of the task.
+      if (!(error instanceof Unwind) && !t.ctl.signal.aborted) await this.#failUnexpected(t, error);
       else if (this.#stopped() && !t.lost && !t.settled && !t.started) await this.#releaseUnstarted(t);
     } finally {
       t.ctl.abort();
@@ -202,7 +203,14 @@ export class Worker {
     const hint = storedRunId ?? (await this.#retry(t, () => this.#board.findLabel(t.task.id, RUN_LABEL)));
     const found = await this.#call(() => this.#backend.find(t.task, hint));
     if (found === null) {
-      t.runId = await this.#call(() => this.#backend.start(t.task, t.ctl.signal));
+      const runId = await this.#call(() => this.#backend.start(t.task, t.ctl.signal));
+      if (t.ctl.signal.aborted) {
+        // The claim was lost, or shutdown began, while the run was being created: nobody will follow this run, so stop
+        // it rather than leave it running unrecorded. A stop then releases the task as one whose run never started.
+        await this.#backend.cancel(runId).catch(() => undefined);
+        throw new Unwind();
+      }
+      t.runId = runId;
       // From here a stop must not release: a run exists.
       t.started = true;
       await this.#call(() => this.#store.put(this.#stored(t)));
