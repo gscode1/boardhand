@@ -10,7 +10,8 @@
     "node": ">=22.18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && tsc -p tsconfig.server.json",
+    "start:server": "node dist/server/main.js",
     "start": "node dist/main.js",
     "lint": "eslint .",
     "format": "prettier --write .",

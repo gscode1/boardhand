@@ -1,0 +1,80 @@
+# Defaults for the boardhand chart. The chart holds no secret values: every token comes from a Secret you create
+# (docs/deployment.md has the kubectl commands).
+
+image:
+  repository: ghcr.io/gscode1/boardhand
+  # A short git sha from the image workflow (immutable), or `main` (moves; pair it with pullPolicy: Always).
+  tag: main
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The board server (`node dist/server/main.js`): one replica on a PVC, never more (ADR 0005).
+board:
+  enabled: true
+  # The URL everyone uses to reach the board; the engine checks it as the token audience. Workers use it as BOARD_URL.
+  # Empty: http://<release>-board.<namespace>.svc:8080
+  publicUrl: ""
+  persistence:
+    storageClass: "" # empty: the cluster's default class
+    size: 5Gi
+  tokens:
+    # Required. A Secret holding the tokens file: one `name:kind:token[:channels]` per line (docs/configuration.md).
+    existingSecret: ""
+    key: tokens
+  stale:
+    # Log a task.stale warning for each task ready longer than afterSeconds, every checkSeconds (0 turns it off).
+    checkSeconds: 60
+    afterSeconds: 900
+  # Who besides the workers may reach the board, as raw NetworkPolicy `from` entries, for example your ingress
+  # controller or the pods of whoever posts tasks:
+  #   - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress } }
+  ingress:
+    from: []
+  # With board.enabled false (a board elsewhere): where the workers' egress to it goes, in the route egress shape.
+  egress: []
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+  terminationGracePeriodSeconds: 30
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# One worker Deployment per entry. All fields are validated when the chart renders.
+#
+# routes:
+#   - name: dev                        # DNS label; names the Deployment, ServiceAccount and NetworkPolicy
+#     channel: dev                     # BOARDHAND_CHANNEL
+#     labels: { team: web }            # BOARDHAND_LABELS: a task must carry all of them
+#     from: ["boardhand:person:gs"]    # BOARDHAND_FROM: owner principal IDs (required, never empty)
+#     backend: pi                      # BOARDHAND_BACKEND
+#     backendOptions: { url: "http://pi-ingest.pi-durable-poc.svc:8080" }
+#     concurrency: 1                   # BOARDHAND_CONCURRENCY
+#     lease: 300                       # BOARDHAND_LEASE, seconds
+#     wait: 30                         # BOARDHAND_WAIT, seconds
+#     profile: boardhand               # BOARD_PROFILE
+#     boardTokenSecret: { name: boardhand-worker-dev, key: token }     # becomes BOARD_TOKEN
+#     backendTokenSecret: { name: boardhand-pi, key: token }           # becomes PI_TOKEN (the backend's token env)
+#     egress:                          # on top of DNS and the board
+#       - { namespace: pi-durable-poc, podSelector: { app.kubernetes.io/name: pi-ingest }, ports: [8080] }
+#       - { cidr: 203.0.113.0/24, ports: [443] }
+#     resources: {}
+#     terminationGracePeriodSeconds: 30
+routes: []
+
+worker:
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 256Mi }
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+networkPolicy:
+  # Default deny for the release's pods, then: board ingress from workers and board.ingress.from; worker egress to DNS,
+  # the board and the route's egress. Needs a CNI that enforces NetworkPolicy.
+  enabled: true
+  dns:
+    namespace: kube-system
+    podSelector:
+      k8s-app: kube-dns

@@ -21,3 +21,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
+
+  chart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint charts/boardhand -f charts/boardhand/examples/c2.yaml
+      - run: helm template boardhand charts/boardhand -n boardhand -f charts/boardhand/examples/c2.yaml > /dev/null

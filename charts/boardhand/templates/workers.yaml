@@ -1,0 +1,122 @@
+{{- $names := dict }}
+{{- range $route := .Values.routes }}
+{{- $where := printf "route %v" (default "?" $route.name) }}
+{{- $name := required (printf "%s: name is required" $where) $route.name }}
+{{- if not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" $name) }}{{ fail (printf "%s: name must be a DNS label" $where) }}{{ end }}
+{{- if hasKey $names $name }}{{ fail (printf "%s: name is used twice" $where) }}{{ end }}
+{{- $_ := set $names $name true }}
+{{- $channel := required (printf "%s: channel is required" $where) $route.channel }}
+{{- if not $route.from }}{{ fail (printf "%s: from is required (owner principal IDs; task text is untrusted)" $where) }}{{ end }}
+{{- $backend := required (printf "%s: backend is required" $where) $route.backend }}
+{{- $tokenSecret := required (printf "%s: boardTokenSecret {name, key} is required" $where) $route.boardTokenSecret }}
+{{- $ctx := dict "root" $ "component" "worker" "route" $name }}
+{{- $full := include "boardhand.workerName" (dict "root" $ "route" $route) }}
+{{- $backendTokenEnv := $route.backendTokenEnv | default (get (dict "pi" "PI_TOKEN") $backend) }}
+{{- if and $route.backendTokenSecret (not $backendTokenEnv) }}{{ fail (printf "%s: backend %s has no known token variable; set backendTokenEnv" $where $backend) }}{{ end }}
+{{- if and (eq $backend "pi") (not $route.backendTokenSecret) }}{{ fail (printf "%s: backend pi needs backendTokenSecret (PI_TOKEN)" $where) }}{{ end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+# A worker talks to the board and its backend over HTTP; it needs no Kubernetes API access.
+automountServiceAccountToken: false
+---
+# Recreate, not RollingUpdate. A rolling update would run the old and the new worker side by side. That is safe, since
+# the board fences claims, but it briefly doubles the route's concurrency, which is a cap we promise. Downtime during
+# a Recreate is harmless: tasks wait on the board.
+# The state dir is an emptyDir: it survives a container restart but not a new pod, so after a rollout a started run is
+# picked up again by the thread's run label once its lease lapses (docs/worker.md, Restart).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "boardhand.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "boardhand.labels" $ctx | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $full }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $route.terminationGracePeriodSeconds | default 30 }}
+      securityContext:
+        {{- include "boardhand.podSecurityContext" $ | nindent 8 }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: {{ include "boardhand.image" $ | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command: ["node", "dist/main.js"]
+          env:
+            - { name: BOARD_URL, value: {{ include "boardhand.boardUrl" $ | quote }} }
+            - name: BOARD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required (printf "%s: boardTokenSecret.name is required" $where) $tokenSecret.name | quote }}
+                  key: {{ required (printf "%s: boardTokenSecret.key is required" $where) $tokenSecret.key | quote }}
+            - { name: BOARD_PROFILE, value: {{ $route.profile | default "boardhand" | quote }} }
+            - { name: BOARDHAND_CHANNEL, value: {{ $channel | quote }} }
+            {{- if $route.labels }}
+            {{- $pairs := list }}
+            {{- range $k, $v := $route.labels }}{{ $pairs = append $pairs (printf "%s=%s" $k $v) }}{{ end }}
+            - { name: BOARDHAND_LABELS, value: {{ join "," $pairs | quote }} }
+            {{- end }}
+            - { name: BOARDHAND_FROM, value: {{ join "," $route.from | quote }} }
+            - { name: BOARDHAND_BACKEND, value: {{ $backend | quote }} }
+            {{- if $route.backendOptions }}
+            - { name: BOARDHAND_BACKEND_OPTIONS, value: {{ $route.backendOptions | toJson | quote }} }
+            {{- end }}
+            {{- with $route.concurrency }}
+            - { name: BOARDHAND_CONCURRENCY, value: {{ . | int | quote }} }
+            {{- end }}
+            {{- with $route.lease }}
+            - { name: BOARDHAND_LEASE, value: {{ . | int | quote }} }
+            {{- end }}
+            {{- with $route.wait }}
+            - { name: BOARDHAND_WAIT, value: {{ . | int | quote }} }
+            {{- end }}
+            - { name: BOARDHAND_STATE_DIR, value: /var/lib/boardhand }
+            {{- if $route.backendTokenSecret }}
+            - name: {{ $backendTokenEnv }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required (printf "%s: backendTokenSecret.name is required" $where) $route.backendTokenSecret.name | quote }}
+                  key: {{ required (printf "%s: backendTokenSecret.key is required" $where) $route.backendTokenSecret.key | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml ($route.resources | default $.Values.worker.resources) | nindent 12 }}
+          securityContext:
+            {{- include "boardhand.containerSecurityContext" $ | nindent 12 }}
+          volumeMounts:
+            - { name: state, mountPath: /var/lib/boardhand }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: state, emptyDir: {} }
+        - { name: tmp, emptyDir: {} }
+      {{- with $.Values.worker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.worker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.worker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

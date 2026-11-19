@@ -1,0 +1,85 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $release := .Release.Name }}
+# Default deny, both ways, for every pod of this release. The policies below add what is needed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $release }}-default-deny
+  labels:
+    {{- include "boardhand.labels" (dict "root" . "component" "network") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: boardhand
+      app.kubernetes.io/instance: {{ $release }}
+  policyTypes: [Ingress, Egress]
+{{- if .Values.board.enabled }}
+---
+# The board takes connections from this release's workers and from board.ingress.from, on 8080. It opens none.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "boardhand.boardName" . }}-ingress
+  labels:
+    {{- include "boardhand.labels" (dict "root" . "component" "board") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "boardhand.selectorLabels" (dict "root" . "component" "board") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: boardhand
+              app.kubernetes.io/instance: {{ $release }}
+              app.kubernetes.io/component: worker
+        {{- with .Values.board.ingress.from }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+{{- end }}
+{{- range $route := .Values.routes }}
+{{- $ctx := dict "root" $ "component" "worker" "route" $route.name }}
+{{- $where := printf "route %s" $route.name }}
+---
+# Worker egress: DNS, the board, and what the route lists. Nothing else, and no ingress at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "boardhand.workerName" (dict "root" $ "route" $route) }}-egress
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "boardhand.selectorLabels" $ctx | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.networkPolicy.dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $.Values.networkPolicy.dns.podSelector | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    {{- if $.Values.board.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "boardhand.selectorLabels" (dict "root" $ "component" "board") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+    {{- end }}
+    {{- range $.Values.board.egress }}
+    {{- include "boardhand.egressRule" (dict "entry" . "where" "board.egress") | nindent 4 }}
+    {{- end }}
+    {{- range $route.egress }}
+    {{- include "boardhand.egressRule" (dict "entry" . "where" $where) | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}

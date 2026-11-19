@@ -1,5 +1,7 @@
 # Configuration
 
+This page covers the worker first, then the [board server](#board-server) (`server/`, ADR 0005).
+
 A worker serves one route (see [plan.md](../plan.md)). It reads the route from environment variables once, at start, in
 `src/route.ts`. It checks all of them and reports every problem at once, so a bad deployment fails at start and not on
 the first task. Empty values count as unset; surrounding spaces are trimmed.
@@ -86,3 +88,53 @@ Main events:
 | `fatal` | error | An error that ends the process with code 1. |
 
 See [worker.md](worker.md) for when each happens.
+
+## Board server
+
+`node dist/server/main.js`. It reads the environment once at start (`server/config.ts`) and reports every problem at
+once, exiting 2.
+
+| Name | Required / default | Valid values | Meaning |
+|---|---|---|---|
+| `BOARD_DATA_DIR` | required | a directory path | Where the engine's SQLite files live (a PVC). |
+| `BOARD_PUBLIC_URL` | required | an `http` or `https` URL | The URL clients use; the engine checks it as the token audience. |
+| `BOARD_TOKENS_FILE` | required | a file path | The tokens file (below). Mount it from a Secret. |
+| `PORT` | `8080` | integer, 0 to 65535 | Listening port (0: the OS picks one; logged in `server.start`). |
+| `BOARD_STALE_CHECK_SECONDS` | `60` | integer, 0 to 86400 | How often to look for stale tasks; 0 turns the check off. |
+| `BOARD_STALE_AFTER_SECONDS` | `900` | integer, 1 and up | A ready task older than this is stale. |
+
+### Tokens file
+
+One entry per line, `name:kind:token[:channels]`. Blank lines and lines starting with `#` are skipped.
+
+| Field | Rules |
+|---|---|
+| `name` | Lowercase letter first, then up to 31 lowercase letters, digits or `-`. Unique. It is the handle and the last part of the principal ID. |
+| `kind` | `person` (a human or an owner; full access) or `worker` (a boardhand worker). |
+| `token` | 24 to 256 characters from `A-Z a-z 0-9 . _ ~ + / = -` (no colon). Unique. Use `openssl rand -hex 32`. **Secret.** |
+| `channels` | Workers only, required: comma-separated channels the worker may use. `dev` is one channel, `dev/` is `dev` and everything below. A person takes none. |
+
+Principal IDs are `boardhand:person:<name>` and `boardhand:worker:<name>`. A route's `BOARDHAND_FROM` names `person` IDs.
+A worker may read, post (reply) and label (claim, settle) in its channels, and does nothing elsewhere. Example:
+
+```
+gs:person:<64 hex chars>
+dev:worker:<64 hex chars>:dev
+review:worker:<64 hex chars>:review/,dev
+```
+
+Tokens are compared in constant time and never logged; an invalid file is reported by line number without values. A
+changed file takes effect at the next start.
+
+### Server log events
+
+| Event | Level | Meaning |
+|---|---|---|
+| `server.start` | info | Listening; has `port`, `url` and the token names, kinds and channels (never the tokens). |
+| `task.stale` | warn | A ready task older than `BOARD_STALE_AFTER_SECONDS`: `task`, `channel`, `labels`, `ageSeconds`. Repeats on every check. |
+| `stale.check_error` | error | A check failed (it is retried at the next tick). |
+| `config.invalid` | error | Bad configuration or tokens file; has `problems`. Exit 2. |
+| `server.stopping` | info | SIGTERM or SIGINT; the server drains for up to 5 seconds, then exits 0. |
+| `fatal` | error | Any other error at start. Exit 1. |
+
+`GET /healthz` answers 200 without a token (503 while stopping).

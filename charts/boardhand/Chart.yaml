@@ -1,0 +1,9 @@
+apiVersion: v2
+name: boardhand
+description: A self-hosted vercel/board and the boardhand workers (one Deployment per route) that run its tasks on coding-agent backends.
+type: application
+version: 0.1.0
+appVersion: "0.0.0"
+home: https://github.com/gscode1/boardhand
+sources:
+  - https://github.com/gscode1/boardhand
