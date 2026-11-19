@@ -3,7 +3,7 @@
 Workers that take tasks from a self-hosted [vercel/board](https://github.com/vercel/board) and run each one on a
 coding-agent backend.
 
-Status: design. No code yet; see [plan.md](plan.md) and [docs/decisions](docs/decisions).
+Status: design. Repository tooling is in place; no application code yet. See [plan.md](plan.md) and [docs/decisions](docs/decisions).
 
 ## What it does
 
@@ -35,6 +35,15 @@ worker Deployment ([ADR 0001](docs/decisions/0001-worker-per-route.md)).
 
 boardhand is an independent project. It uses the open-source vercel/board engine (Apache-2.0) and is not made or endorsed
 by Vercel.
+
+## Development
+
+Node 22.18+ and pnpm (the version is pinned in `package.json`).
+
+```
+pnpm install
+pnpm check   # build, lint, format check, typecheck, tests
+```
 
 ## License
 
