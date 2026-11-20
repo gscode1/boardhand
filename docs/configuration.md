@@ -13,7 +13,7 @@ the first task. Empty values count as unset; surrounding spaces are trimmed.
 | `BOARD_URL` | required | an `http` or `https` URL | The board to serve. Trailing slashes are removed. |
 | `BOARD_TOKEN` | required | any text | The worker's board token. **Secret.** |
 | `BOARD_PROFILE` | `boardhand` | lowercase letter first, then up to 31 lowercase letters, digits or `-` | The profile the worker acts as on the board. |
-| `BOARDHAND_CHANNEL` | required | any text | The channel the route serves. |
+| `BOARDHAND_CHANNEL` | required | a board channel name, or a subtree ending in `/` | The channel the route serves. `dev` is one channel; `agents/` is `agents` and every channel below it, including ones created later ([ADR 0006](decisions/0006-subtree-routes-channel-profiles.md)). The worker's token must be scoped to it (`agents/`). |
 | `BOARDHAND_LABELS` | none | `key=value` pairs, comma separated | Labels a task must have to be claimed. Both key and value must be non-empty. |
 | `BOARDHAND_FROM` | required | owner IDs, comma separated; at least one | The owners the route claims from. These are principal IDs, not handles. It is never empty, because task text is untrusted input. |
 | `BOARDHAND_BACKEND` | required | `fake` | The backend that runs tasks. Only `fake` exists in phase 1. |

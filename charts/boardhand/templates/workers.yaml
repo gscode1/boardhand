@@ -6,6 +6,7 @@
 {{- if hasKey $names $name }}{{ fail (printf "%s: name is used twice" $where) }}{{ end }}
 {{- $_ := set $names $name true }}
 {{- $channel := required (printf "%s: channel is required" $where) $route.channel }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)*/?$" (toString $channel)) }}{{ fail (printf "%s: channel must be a board channel such as dev, or a subtree such as agents/" $where) }}{{ end }}
 {{- if not $route.from }}{{ fail (printf "%s: from is required (owner principal IDs; task text is untrusted)" $where) }}{{ end }}
 {{- $backend := required (printf "%s: backend is required" $where) $route.backend }}
 {{- $tokenSecret := required (printf "%s: boardTokenSecret {name, key} is required" $where) $route.boardTokenSecret }}

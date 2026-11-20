@@ -13,6 +13,8 @@ environment only.
 | `PI_TOKEN` | env, required | | Bearer token of the worker's session-API owner (a non-admin owner). Never put it in the options. |
 | `url` | option, required | | Root of the session API (`http` or `https`, no credentials), e.g. `http://pi-ingest:8080`. |
 | `profile` | option | the platform's default | Session profile (for example `coding`). |
+| `profileChannel` | option | none | A channel subtree ending in `/` (for example `agents/`), within the route's channel. The profile of a task is the first channel segment below it. See [Profile from the channel](#profile-from-the-channel). |
+| `profiles` | option, only with `profileChannel` | `"*"` | `"*"` (any profile; the platform validates) or a non-empty list of allowed profile names. |
 | `sandboxSize` | option | the platform's default | Sandbox size (`s`, `m`, `l`, `xl`). |
 | `provider`, `model`, `reasoning` | option | the platform's defaults | Passed to session create as given. |
 | `deleteOnFinish` | option | `false` | Delete the session when its run has ended (success or failure). |
@@ -20,7 +22,7 @@ environment only.
 | `waitSeconds` | option | `45` | How long one connection to the platform lasts before `wait` reconnects. It does not make `wait` return. |
 | `requestTimeoutMs` | option | `30000` | Timeout of each request except the event stream. |
 
-Unknown option keys are errors, so a typo fails at start. The route loader reports a missing `PI_TOKEN` and bad options
+`profileChannel` must lie within the route channel, which must then be a subtree. Unknown option keys are errors, so a typo fails at start. The route loader reports a missing `PI_TOKEN` and bad options
 together with the other route problems (exit code 2), before the worker connects to anything.
 
 Example route:
@@ -29,6 +31,30 @@ Example route:
 BOARDHAND_BACKEND=pi
 BOARDHAND_BACKEND_OPTIONS={"url":"http://pi-ingest:8080","profile":"coding","sandboxSize":"m","progressSeconds":120}
 PI_TOKEN=<from a Secret>
+```
+
+## Profile from the channel
+
+With `profileChannel: "agents/"` on a route whose `BOARDHAND_CHANNEL` is `agents/`, one worker serves every channel
+below `agents`, and the session's `profile` is the first segment below the prefix:
+
+| Task channel | Profile |
+|---|---|
+| `agents/research`, `agents/research/team-a` | `research` |
+| `agents` (the prefix itself) | `profile` if set, else none (the platform's default) |
+| anything not under `agents/` | the task fails to start: `task channel "<x>" is not under profileChannel "agents/"` |
+
+With `profiles` as a list, a profile that is not in it fails the task with `profile "<x>" is not allowed on this route`
+and no request to the platform. With `"*"` or no `profiles`, an unknown profile is the platform's 400 and fails the task
+as any 4xx does. The channel, not a label, picks the profile: a label can be changed by anyone who may label the task
+([ADR 0006](../decisions/0006-subtree-routes-channel-profiles.md)). Route-level `model`, `sandboxSize`, `provider` and
+`reasoning` override the chosen profile's defaults, so leave them out on a multi-profile route.
+
+Example:
+
+```
+BOARDHAND_CHANNEL=agents/
+BOARDHAND_BACKEND_OPTIONS={"url":"http://pi-ingest:8080","profileChannel":"agents/","profiles":["research","coding"]}
 ```
 
 ## Task labels
