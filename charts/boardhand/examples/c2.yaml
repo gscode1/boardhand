@@ -1,6 +1,6 @@
 # The lab cluster "c2": the board on Longhorn, two routes that send tasks to pi-durable-k8s in pi-durable-poc: `dev`
 # (one channel, one profile) and `agents/` (a channel subtree, where the channel under it picks the pi profile).
-# Create the three Secrets first (docs/deployment.md). Pin image.tag to a sha from the image workflow.
+# Create the Secrets first (docs/deployment.md). Pin image.tag to a sha from the image workflow.
 image:
   tag: main
   pullPolicy: Always
@@ -12,6 +12,21 @@ board:
   tokens:
     existingSecret: boardhand-board-tokens
     key: tokens
+
+# The board's UI at board.c2.lab through the lab Gateway (no authentication yet: ADR 0007). Needs the Secret
+# `boardhand-inspector`, key `token`, holding an owner token (docs/deployment.md).
+inspector:
+  enabled: true
+  tokenSecret: { name: boardhand-inspector, key: token }
+  httpRoute:
+    enabled: true
+    hostnames: [board.c2.lab]
+    parentRefs:
+      - { name: main, namespace: envoy-gateway-system, sectionName: http }
+      - { name: main, namespace: envoy-gateway-system, sectionName: https-c2-lab }
+  allowFrom:
+    - namespace: envoy-gateway-system
+      podSelector: { app.kubernetes.io/name: envoy }
 
 routes:
   - name: dev

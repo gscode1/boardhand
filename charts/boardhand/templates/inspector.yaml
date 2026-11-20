@@ -1,0 +1,164 @@
+{{- if .Values.inspector.enabled }}
+{{- $name := printf "%s-inspector" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- $ctx := dict "root" . "component" "inspector" }}
+{{- $secret := required "inspector.tokenSecret.name is required: a Secret with an owner token" .Values.inspector.tokenSecret.name }}
+{{- $key := required "inspector.tokenSecret.key is required" .Values.inspector.tokenSecret.key }}
+{{- $port := int .Values.inspector.port }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+# The inspector talks to the board over HTTP; it needs no Kubernetes API access.
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  selector:
+    {{- include "boardhand.selectorLabels" $ctx | nindent 4 }}
+  ports:
+    - { name: http, port: {{ $port }}, targetPort: http }
+---
+# Stateless, so a rolling update is fine. It acts as one owner token with no authentication in front (ADR 0007).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "boardhand.selectorLabels" $ctx | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "boardhand.labels" $ctx | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "boardhand.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: inspector
+          image: {{ include "boardhand.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["node", "dist/server/inspect.js"]
+          env:
+            - { name: BOARD_URL, value: {{ include "boardhand.boardUrl" . | quote }} }
+            - name: BOARD_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret | quote }}
+                  key: {{ $key | quote }}
+            - { name: INSPECT_PORT, value: {{ $port | quote }} }
+          ports:
+            - { name: http, containerPort: {{ $port }} }
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.inspector.resources | nindent 12 }}
+          securityContext:
+            {{- include "boardhand.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+      {{- with .Values.inspector.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.inspector.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.inspector.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if .Values.inspector.httpRoute.enabled }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml (required "inspector.httpRoute.parentRefs is required" .Values.inspector.httpRoute.parentRefs) | nindent 4 }}
+  hostnames:
+    {{- toYaml (required "inspector.httpRoute.hostnames is required" .Values.inspector.httpRoute.hostnames) | nindent 4 }}
+  rules:
+    - backendRefs:
+        - { name: {{ $name }}, port: {{ $port }} }
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+---
+# Inspector ingress from the gateway's proxy pods (inspector.allowFrom), and egress to DNS and the board only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "boardhand.selectorLabels" $ctx | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- range .Values.inspector.allowFrom }}
+    {{- $e := . }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ required "an inspector.allowFrom entry needs namespace" $e.namespace | quote }}
+          {{- if $e.podSelector }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $e.podSelector | nindent 14 }}
+          {{- end }}
+      ports:
+        - { protocol: TCP, port: {{ $port }} }
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dns.namespace | quote }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 14 }}
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    {{- if .Values.board.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "boardhand.selectorLabels" (dict "root" . "component" "board") | nindent 14 }}
+      ports:
+        - { protocol: TCP, port: 8080 }
+    {{- end }}
+    {{- range .Values.board.egress }}
+    {{- include "boardhand.egressRule" (dict "entry" . "where" "board.egress") | nindent 4 }}
+    {{- end }}
+{{- end }}
+{{- end }}
