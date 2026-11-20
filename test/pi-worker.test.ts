@@ -29,12 +29,12 @@ async function rig(script: PiScript): Promise<Rig> {
   return { board, pi, stateDir, logs: [] };
 }
 
-async function runWorker(r: Rig, backendOptions: Record<string, unknown> = {}): Promise<Worker> {
+async function runWorker(r: Rig, backendOptions: Record<string, unknown> = {}, channel = "dev"): Promise<Worker> {
   const route: Route = {
     boardUrl: r.board.url,
     boardToken: "not-used",
     profile: "boardhand",
-    channel: "dev",
+    channel,
     labels: {},
     from: [r.board.ownerId],
     backend: "pi",
@@ -45,7 +45,7 @@ async function runWorker(r: Rig, backendOptions: Record<string, unknown> = {}): 
     stateDir: r.stateDir,
   };
   const board = await connectBoard({ url: r.board.url, token: r.board.tokens.worker, profile: "boardhand" });
-  const backend = new PiBackend(parsePiOptions({ url: r.pi.url, ...backendOptions }), r.pi.token);
+  const backend = new PiBackend(parsePiOptions({ url: r.pi.url, ...backendOptions }, channel), r.pi.token);
   const worker = await startWorker({
     route,
     board,
@@ -127,5 +127,24 @@ describe("worker with the pi backend", () => {
       .map((q) => q.method);
     expect(sequence).toEqual(["POST", "DELETE"]);
     expect(await taskState(r, "completed", id)).toBe(false);
+  });
+
+  test("the profile comes from the task's channel under profileChannel", { timeout: 30_000 }, async () => {
+    const r = await rig({ replyText: "done", replyAfterMs: 100 });
+    const id = await createTask(r.board, "agents/research/team-a", "look it up");
+    await runWorker(r, { profileChannel: "agents/", model: "m" }, "agents/");
+    await waitFor(() => taskState(r, "completed", id), 20_000, "task completed");
+    const [session] = [...r.pi.sessions.values()];
+    expect(session?.created).toEqual({ profile: "research", model: "m" });
+    expect(r.pi.count("POST", /^\/sessions$/)).toBe(1);
+  });
+
+  test("a profile outside the allowlist fails the task and never reaches pi", { timeout: 30_000 }, async () => {
+    const r = await rig({ replyText: "done", replyAfterMs: 100 });
+    const id = await createTask(r.board, "agents/secret", "t");
+    await runWorker(r, { profileChannel: "agents/", profiles: ["research"] }, "agents/");
+    await waitFor(() => taskState(r, "failed", id), 20_000, "task failed");
+    expect((await threadTexts(r, id)).at(-1)).toContain('profile "secret" is not allowed on this route');
+    expect(r.pi.count("POST", /^\/sessions$/)).toBe(0);
   });
 });

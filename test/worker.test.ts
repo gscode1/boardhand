@@ -437,3 +437,60 @@ describe("worker scenarios", () => {
     });
   });
 });
+
+describe("a route that is a channel subtree (ADR 0006)", () => {
+  it("claims tasks from channels below it, created later, and settles them", { timeout: 30_000 }, async () => {
+    const board = await rig.board();
+    const w = await rig.launch(board, { route: { channel: "agents/", concurrency: 2 } });
+    const a = await createTask(board, "agents/research", "one");
+    const b = await createTask(board, "agents/coding/x", "two");
+    const [infoA, infoB] = await Promise.all([
+      rig.untilReply(board, a, "Completed:"),
+      rig.untilReply(board, b, "Completed:"),
+    ]);
+    for (const info of [infoA, infoB]) {
+      expect(info.state).toBe("completed");
+      expect(info.replies[0]?.text).toMatch(/^Started fake run fake-/);
+      expect(info.replies[0]?.labels[RUN_LABEL]).toBe(runIdOf(info.replies[0]?.text ?? ""));
+    }
+    expect([...w.fake.starts].sort()).toEqual([a, b].sort());
+  });
+
+  it("does not claim a task in a channel outside the subtree", { timeout: 20_000 }, async () => {
+    const board = await rig.board();
+    const w = await rig.launch(board, { route: { channel: "agents/" } });
+    const inside = await createTask(board, "agents/research", "in");
+    const outside = await createTask(board, "dev", "out");
+    await rig.untilReply(board, inside, "Completed:");
+    expect((await rig.task(board, outside)).state).toBe("ready");
+    expect(w.fake.starts).toEqual([inside]);
+  });
+
+  it(
+    "renews its lease and re-attaches in a sub-channel after a crash, with no second start",
+    { timeout: 40_000 },
+    async () => {
+      const board = await rig.board();
+      const dir = await rig.tmp();
+      const stateDir = await rig.tmp();
+      const counter = new SettleCounter();
+      const fake = { dir, stepMs: 3000 };
+      const route = { channel: "agents/" };
+      const a = await rig.launch(board, { counter, stateDir, fake, route });
+      const id = await createTask(board, "agents/research", "survive me");
+      const started = await rig.untilReply(board, id, "Started");
+      const runId = runIdOf(started.replies[0]?.text ?? "");
+      a.worker.kill();
+      await a.worker.finished;
+      expect(await a.store.list()).toMatchObject([{ taskId: id, runId }]);
+
+      const b = await rig.launch(board, { counter, stateDir, fake, route });
+      const info = await rig.untilReply(board, id, "Completed:", 15_000);
+      expect(b.logs.events("claim.resumed")).toHaveLength(1);
+      expect(b.logs.events("run.reattached")).toMatchObject([{ runId }]);
+      expect(info.state).toBe("completed");
+      expect(a.fake.starts.length + b.fake.starts.length).toBe(1);
+      expect(counter.count(id)).toBe(1);
+    },
+  );
+});

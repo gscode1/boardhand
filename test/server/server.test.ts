@@ -104,6 +104,21 @@ describe("worker grants", () => {
     await claim?.release();
   });
 
+  it("lets a worker scoped to agents/ claim in agents/research and refuses dev", { timeout: 20_000 }, async () => {
+    const r = await rig(["gs:person", "agents:worker:agents/"]);
+    const owner = await r.client("gs");
+    const ownerId = (await owner.me()).principal;
+    const { task } = await owner.tasks.create("agents/research", { text: "look it up" });
+    await owner.tasks.create("dev", { text: "elsewhere" });
+    const worker = await r.client("agents", "boardhand");
+    expect((await refusal(() => worker.tasks.claim({ channel: "dev", from: [ownerId], wait: 1 }))).status).toBe(403);
+    const claim = await worker.tasks.claim({ channel: "agents/", from: [ownerId], wait: 1, lease: 60 });
+    expect(claim?.task.id).toBe(task.id);
+    expect(claim?.task.channel).toBe("agents/research");
+    await worker.reply(task.id, "working");
+    await claim?.complete("done");
+  });
+
   it(
     "never gives a worker unrestricted access, whatever the Authorization header looks like",
     { timeout: 30_000 },

@@ -35,6 +35,8 @@ export const KNOWN_BACKENDS: readonly string[] = ["fake", "pi"];
 type Env = Readonly<Record<string, string | undefined>>;
 
 // The intersection of what the board's HTTP and local backends accept for a profile.
+// The board's channel-name grammar; a trailing `/` makes the route a subtree (ADR 0006).
+const CHANNEL = /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*\/?$/;
 const PROFILE = /^[a-z][a-z0-9-]{0,31}$/;
 
 export function loadRoute(env: Env = process.env): Route {
@@ -70,6 +72,9 @@ export function loadRoute(env: Env = process.env): Route {
     fail("BOARD_PROFILE must start with a lowercase letter and use up to 32 lowercase letters, digits and hyphens");
   }
   const channel = required("BOARDHAND_CHANNEL");
+  if (channel !== undefined && !CHANNEL.test(channel)) {
+    fail('BOARDHAND_CHANNEL must be a channel such as "dev" or a subtree ending in "/" such as "agents/"');
+  }
   const labels = parseLabels(text("BOARDHAND_LABELS"), fail);
   const from = (text("BOARDHAND_FROM") ?? "")
     .split(",")
@@ -84,7 +89,7 @@ export function loadRoute(env: Env = process.env): Route {
   if (backend === "pi") {
     if (piTokenFrom(env) === undefined) fail("PI_TOKEN is required when BOARDHAND_BACKEND is pi");
     try {
-      parsePiOptions(backendOptions);
+      parsePiOptions(backendOptions, channel);
     } catch (error) {
       if (!(error instanceof BackendOptionsError)) throw error;
       for (const problem of error.problems) fail(`BOARDHAND_BACKEND_OPTIONS: ${problem}`);

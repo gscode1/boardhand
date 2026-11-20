@@ -12,6 +12,10 @@ export { PiError } from "./pi-api.js";
 export type PiOptions = {
   url: string;
   profile?: string;
+  /** A subtree pattern ending in `/`: the profile of a task is the first channel segment below it. */
+  profileChannel?: string;
+  /** With `profileChannel`: the profiles a task may use. Absent means any (the platform validates). */
+  profiles?: readonly string[];
   sandboxSize?: string;
   provider?: string;
   model?: string;
@@ -39,14 +43,24 @@ const STRING_OPTIONS = ["profile", "sandboxSize", "provider", "model", "reasonin
 const KNOWN_KEYS: readonly string[] = [
   "url",
   ...STRING_OPTIONS,
+  "profileChannel",
+  "profiles",
   "deleteOnFinish",
   "waitSeconds",
   "requestTimeoutMs",
   "progressSeconds",
 ];
 
-/** Validates BOARDHAND_BACKEND_OPTIONS for `pi` (untyped JSON), listing every problem. Unknown keys are errors. */
-export function parsePiOptions(raw: Record<string, unknown>): PiOptions {
+// The board's channel-name grammar (a trailing `/` makes a subtree), duplicated here because a backend must not import
+// the board.
+const CHANNEL_SEGMENTS = "[a-z0-9][a-z0-9._-]*(?:\\/[a-z0-9][a-z0-9._-]*)*";
+const SUBTREE = new RegExp(`^${CHANNEL_SEGMENTS}/$`);
+
+/**
+ * Validates BOARDHAND_BACKEND_OPTIONS for `pi` (untyped JSON), listing every problem. Unknown keys are errors.
+ * `routeChannel` is the route's `BOARDHAND_CHANNEL`; when given, `profileChannel` must lie within it.
+ */
+export function parsePiOptions(raw: Record<string, unknown>, routeChannel?: string): PiOptions {
   const problems: string[] = [];
   const integer = (key: string, fallback: number, min: number, max: number): number => {
     const value = raw[key];
@@ -85,6 +99,28 @@ export function parsePiOptions(raw: Record<string, unknown>): PiOptions {
     if (value === undefined) continue;
     if (typeof value !== "string" || value.trim() === "") problems.push(`${key} must be a non-empty string`);
     else options[key] = value.trim();
+  }
+  const profileChannel = raw["profileChannel"];
+  if (profileChannel !== undefined) {
+    if (typeof profileChannel !== "string" || !SUBTREE.test(profileChannel)) {
+      problems.push('profileChannel must be a channel subtree ending in "/", such as "agents/"');
+    } else if (routeChannel !== undefined && !(routeChannel.endsWith("/") && profileChannel.startsWith(routeChannel))) {
+      // A task outside the route's subtree is never claimed, so a pattern outside it could never match.
+      problems.push(`profileChannel "${profileChannel}" must be within the route channel "${routeChannel}", a subtree`);
+    } else options.profileChannel = profileChannel;
+  }
+  const profiles = raw["profiles"];
+  if (profiles !== undefined) {
+    if (profileChannel === undefined) problems.push("profiles is only valid with profileChannel");
+    else if (profiles === "*") {
+      // any profile: the platform validates
+    } else if (
+      Array.isArray(profiles) &&
+      profiles.length > 0 &&
+      profiles.every((p) => typeof p === "string" && p.trim() !== "")
+    ) {
+      options.profiles = (profiles as string[]).map((p) => p.trim());
+    } else problems.push('profiles must be "*" or a non-empty array of profile names');
   }
   const del = raw["deleteOnFinish"];
   if (del !== undefined) {
@@ -141,6 +177,8 @@ export class PiBackend implements Backend {
       const value = this.#options[key];
       if (value !== undefined) body[key] = value;
     }
+    const profile = this.#profileFor(task.channel);
+    if (profile !== undefined) body.profile = profile;
     const repo = task.labels["repo"];
     if (repo !== undefined && repo !== "") body.repo = repo;
     const branch = task.labels["branch"];
@@ -159,6 +197,27 @@ export class PiBackend implements Backend {
     } catch (error) {
       throw unavailableOrSame(error);
     }
+  }
+
+  /**
+   * The profile of a task from its channel (the channel is fixed at creation by an owner the route trusts, unlike
+   * labels). Undefined means pi's default. A plain Error: retrying cannot fix a task in the wrong channel.
+   */
+  #profileFor(channel: string): string | undefined {
+    const prefix = this.#options.profileChannel;
+    if (prefix === undefined) return undefined;
+    const root = prefix.slice(0, -1);
+    const name = channel.replace(/\/+$/, "");
+    if (name === root) return this.#options.profile;
+    if (!name.startsWith(prefix)) {
+      throw new Error(`task channel "${channel}" is not under profileChannel "${prefix}"`);
+    }
+    const profile = name.slice(prefix.length).split("/")[0] ?? "";
+    const allowed = this.#options.profiles;
+    if (allowed !== undefined && !allowed.includes(profile)) {
+      throw new Error(`profile "${profile}" is not allowed on this route`);
+    }
+    return profile;
   }
 
   async find(_task: RunTask, hint: string | null): Promise<string | null> {

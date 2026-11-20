@@ -22,7 +22,7 @@ async function main(): Promise<void> {
   try {
     route = loadRoute();
     // Backend options are config too: a bad one must fail fast with the same exit code as a bad route.
-    backend = createBackend(route.backend, route.backendOptions);
+    backend = createBackend(route.backend, route.backendOptions, process.env, { channel: route.channel });
   } catch (error) {
     const problems =
       error instanceof RouteError ? error.problems : [error instanceof Error ? error.message : String(error)];
