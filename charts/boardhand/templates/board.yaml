@@ -39,6 +39,27 @@ metadata:
     {{- include "boardhand.labels" $ctx | nindent 4 }}
 data:
   triggers.json: {{ $triggersJson | quote }}
+{{- if .Values.board.github.httpRoute.enabled }}
+---
+# Only the webhook path and method reach the board from this route; the board API stays off it.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $name }}-github
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+spec:
+  parentRefs:
+    {{- toYaml (required "board.github.httpRoute.parentRefs is required" (.Values.board.github.httpRoute.parentRefs | default nil)) | nindent 4 }}
+  hostnames:
+    {{- toYaml (required "board.github.httpRoute.hostnames is required" (.Values.board.github.httpRoute.hostnames | default nil)) | nindent 4 }}
+  rules:
+    - matches:
+        - path: { type: Exact, value: /hooks/github }
+          method: POST
+      backendRefs:
+        - { name: {{ $name }}, port: 8080 }
+{{- end }}
 {{- end }}
 ---
 # One replica on a PVC, never more: the engine's local backend is SQLite, a single-writer store (ADR 0005). A
