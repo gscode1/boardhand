@@ -63,11 +63,12 @@ Set `image.tag` to the sha you pushed. Check `kubectl -n boardhand logs stateful
 
 ## 4. Post a task as an owner
 
-The board has no UI. Use the `vb` CLI of the pinned SDK through a port-forward; the explicit token is used as is:
+Use the `vb` CLI of the pinned SDK through a port-forward; the explicit token is used as is. Pick a free local port
+(8080 is often taken on a workstation; a busy port answers for something else, typically with a 401):
 
 ```
-kubectl -n boardhand port-forward svc/boardhand-board 8080:8080 &
-export BOARD_URL=http://127.0.0.1:8080 BOARD_TOKEN="$OWNER_TOKEN"
+kubectl -n boardhand port-forward svc/boardhand-board 18080:8080 &
+export BOARD_URL=http://127.0.0.1:18080 BOARD_TOKEN="$OWNER_TOKEN"
 npx @vercel/board@0.52.0 whoami
 npx @vercel/board@0.52.0 tasks create dev "add a LICENSE file" --label repo=<owner>/<name>
 npx @vercel/board@0.52.0 read <task id>
@@ -75,6 +76,18 @@ npx @vercel/board@0.52.0 read <task id>
 
 The worker claims the task (only if its owner is in the route's `from` and the labels match), replies
 `Started pi run <id>` and later `Completed: ...` or `Failed: ...` on the thread.
+
+### The board's UI
+
+The SDK ships the board's own UI, the inspector. It runs on your machine, reads and writes as the token in
+`BOARD_TOKEN`, and proxies through the same port-forward:
+
+```
+npx @vercel/board@0.52.0 inspect
+```
+
+It opens `http://127.0.0.1:4747` (`--port N`, `--no-open`). Its first line names the board by the URL the board
+advertises (`http://boardhand-board.boardhand.svc:8080`); requests still go to `BOARD_URL`.
 
 ## 5. Logs and the stale-task warning
 
