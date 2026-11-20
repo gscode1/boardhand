@@ -31,8 +31,9 @@ export class TriggersError extends Error {
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
 const REPO = /^[A-Za-z0-9._-]+\/(?:[A-Za-z0-9._-]+|\*)$/;
 const EVENT = /^[a-z][a-z_]*$/;
-// One channel, not a subtree: the forced scope names exactly the channels triggers post to.
-const CHANNEL = /^[a-z0-9][a-z0-9._-]*$/;
+// One channel (nested names like agents/renovate are one channel), not a subtree (`agents/`): the forced scope names
+// exactly the channels triggers post to.
+const CHANNEL = /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*$/;
 // The engine's label rules (docs 04-reference/03-http.md).
 const LABEL_KEY = /^[a-z0-9][a-z0-9_.-]*$/;
 const LABEL_VALUE_MAX = 256;

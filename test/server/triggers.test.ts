@@ -49,7 +49,7 @@ describe("parseTriggers", () => {
     const problems = problemsOf(
       file(
         { ...base, name: "Bad Name", repos: ["nope"], labels: { "Bad Key": "x" } },
-        { ...base, name: "ok", when: { "pull_request.title": ["x"] }, channel: "a/b" },
+        { ...base, name: "ok", when: { "pull_request.title": ["x"] }, channel: "a/" },
       ),
     );
     expect(problems.length).toBeGreaterThanOrEqual(4);
@@ -59,6 +59,14 @@ describe("parseTriggers", () => {
     expect(shown).toContain("label key");
     expect(shown).toContain("who caused");
     expect(shown).toContain("not a subtree");
+  });
+
+  it("accepts a nested channel name and refuses a subtree", { timeout: 5_000 }, () => {
+    expect(parseTriggers(JSON.stringify({ triggers: [{ ...base, channel: "agents/renovate" }] }))[0]?.channel).toBe(
+      "agents/renovate",
+    );
+    expect(problemsOf(file({ ...base, channel: "agents/" })).join("\n")).toContain("not a subtree");
+    expect(problemsOf(file({ ...base, channel: "agents//x" })).join("\n")).toContain("not a subtree");
   });
 
   it("rejects duplicate names", { timeout: 5_000 }, () => {
