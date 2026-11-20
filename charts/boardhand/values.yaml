@@ -31,8 +31,8 @@ board:
   ingress:
     from: []
   # GitHub webhook triggers (ADR 0008, docs/configuration.md): each turns a matching GitHub event into a task. Empty:
-  # no triggers file, no secret, and POST /hooks/github answers 404. Route that path from your gateway to the board
-  # Service yourself (only that path); with the gateway in board.ingress.from, the NetworkPolicy needs no change.
+  # no triggers file, no secret, and POST /hooks/github answers 404. To reach it from GitHub, enable httpRoute below
+  # (and list that gateway's proxy pods in board.ingress.from).
   # Example (a Renovate PR):
   #   - name: renovate
   #     repos: ["acme/*"]
@@ -46,6 +46,13 @@ board:
     triggers: []
     # Required when triggers is set: an existing Secret holding the webhook's secret (becomes GITHUB_WEBHOOK_SECRET).
     webhookSecret: { name: "", key: secret }
+    # Optional Gateway API HTTPRoute for the webhook. It routes only `POST /hooks/github` (exact path) to the board
+    # Service, nothing else of the board. It renders only when triggers is set and enabled is true. parentRefs should
+    # name a Gateway that serves only public routes, not the one that fronts internal services.
+    httpRoute:
+      enabled: false
+      hostnames: [] # e.g. [hooks.example.com]
+      parentRefs: [] # the Gateway reachable from GitHub, e.g. a public gateway behind a tunnel
   # With board.enabled false (a board elsewhere): where the workers' egress to it goes, in the route egress shape.
   egress: []
   resources:

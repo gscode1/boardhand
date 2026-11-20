@@ -206,11 +206,23 @@ The board server can turn GitHub events into tasks ([ADR 0008](decisions/0008-gi
    triggers use (for example Pull requests, Issues, Issue comments). One secret serves the whole board: use an
    organization webhook, or the same secret on each repository. GitHub's `ping` should answer 200.
 
-The hook must be reachable from GitHub, so route `/hooks/github` to the board Service (`<release>-board`, port 8080) at
-your gateway. The chart's HTTPRoute serves only the inspector; the gateway reaches the board through `board.ingress.from`
-as any other client, and the NetworkPolicy needs no change. Expose only that path, not the board API. Restrict it to
-GitHub's webhook source ranges (the `hooks` list at <https://api.github.com/meta>) at the gateway; the signature check is
-the authentication, and the ranges only cut noise and attack surface.
+The hook must be reachable from GitHub. Set `board.github.httpRoute` to have the chart render a Gateway API HTTPRoute
+`<release>-board-github`: it routes only `POST /hooks/github` (exact path) to the board Service (port 8080), nothing else
+of the board. It renders only when triggers are set and `enabled` is true, and `hostnames` and `parentRefs` are required:
+
+```yaml
+board:
+  github:
+    httpRoute:
+      enabled: true
+      hostnames: [hooks.example.com]
+      parentRefs: [{ name: public, namespace: envoy-gateway-system, sectionName: https }]
+```
+
+Use a gateway that serves only public routes (for example one behind a tunnel), not the one that fronts internal
+services. The board's NetworkPolicy must admit that gateway's proxy pods: list them in `board.ingress.from`. Restrict the
+route to GitHub's webhook source ranges (the `hooks` list at <https://api.github.com/meta>) at the edge; the signature
+check is the authentication, and the ranges only cut noise and attack surface.
 
 If the board is down or refuses a task, the delivery gets a 502 and GitHub does not retry. Open the webhook's Recent
 Deliveries in GitHub and redeliver it: tasks already made are not made twice. To rotate the secret, change it in GitHub
