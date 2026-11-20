@@ -27,6 +27,10 @@ worker Deployment ([ADR 0001](docs/decisions/0001-worker-per-route.md)).
 
 How one task flows through a worker is in [docs/worker.md](docs/worker.md).
 
+The board server can also start tasks from GitHub: declarative triggers turn webhook events (a Renovate PR, an issue
+labeled by a maintainer, a `/boardhand` comment) into tasks ([ADR 0008](docs/decisions/0008-github-triggers.md),
+[docs/configuration.md](docs/configuration.md#github-triggers)). Results are not posted back to GitHub yet.
+
 ## Run a worker
 
 One worker serves one route, and it is configured from the environment. Set these, then start it:

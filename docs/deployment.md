@@ -166,3 +166,54 @@ kubectl -n boardhand scale statefulset/boardhand-board --replicas=1
 
 Do not copy the live files of a running board: SQLite needs a consistent snapshot. Deleting the release keeps the PVC;
 delete it by hand to remove the data.
+
+## 8. GitHub webhooks
+
+The board server can turn GitHub events into tasks ([ADR 0008](decisions/0008-github-triggers.md); the trigger file is in
+[configuration.md](configuration.md#github-triggers)). It is off until you set `board.github.triggers`.
+
+1. Make the webhook's secret and store it in a Secret:
+
+   ```
+   WEBHOOK_SECRET=$(openssl rand -hex 32)
+   kubectl -n boardhand create secret generic boardhand-github --from-literal=secret="$WEBHOOK_SECRET"
+   ```
+
+2. Set the triggers and the Secret in your values (see the commented example in `charts/boardhand/values.yaml`), and
+   list `boardhand:source:github` in the `from` of each route that should run these tasks:
+
+   ```yaml
+   board:
+     github:
+       webhookSecret: { name: boardhand-github, key: secret }
+       triggers:
+         - name: renovate
+           repos: ["acme/*"]
+           event: pull_request
+           actions: [opened, synchronize]
+           when: { pull_request.user.login: ["renovate[bot]"] }
+           channel: agents/deps
+           labels: { kind: renovate }
+           text: "Check Renovate's update {{pull_request.html_url}}: {{pull_request.title}}"
+   ```
+
+   Run `helm upgrade` as in step 3. The chart mounts the triggers as a ConfigMap and restarts the board pod when they
+   change; a missing `webhookSecret.name` fails the render. Check `kubectl -n boardhand logs statefulset/boardhand-board`
+   shows `server.start`.
+
+3. In GitHub (a repository's or an organization's Settings, Webhooks), add a webhook: payload URL
+   `https://<board host>/hooks/github`, content type `application/json`, the secret from step 1, and only the events your
+   triggers use (for example Pull requests, Issues, Issue comments). One secret serves the whole board: use an
+   organization webhook, or the same secret on each repository. GitHub's `ping` should answer 200.
+
+The hook must be reachable from GitHub, so route `/hooks/github` to the board Service (`<release>-board`, port 8080) at
+your gateway. The chart's HTTPRoute serves only the inspector; the gateway reaches the board through `board.ingress.from`
+as any other client, and the NetworkPolicy needs no change. Expose only that path, not the board API. Restrict it to
+GitHub's webhook source ranges (the `hooks` list at <https://api.github.com/meta>) at the gateway; the signature check is
+the authentication, and the ranges only cut noise and attack surface.
+
+If the board is down or refuses a task, the delivery gets a 502 and GitHub does not retry. Open the webhook's Recent
+Deliveries in GitHub and redeliver it: tasks already made are not made twice. To rotate the secret, change it in GitHub
+and in the Secret, then `kubectl -n boardhand rollout restart statefulset/boardhand-board`.
+
+Results are not posted back to GitHub yet: the outcome is on the board task's thread.

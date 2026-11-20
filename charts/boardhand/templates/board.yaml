@@ -2,6 +2,13 @@
 {{- $name := include "boardhand.boardName" . }}
 {{- $secret := required "board.tokens.existingSecret is required: the Secret that holds the tokens file" .Values.board.tokens.existingSecret }}
 {{- $ctx := dict "root" . "component" "board" }}
+{{- $triggers := .Values.board.github.triggers }}
+{{- $triggersJson := "" }}
+{{- $webhookSecret := "" }}
+{{- if $triggers }}
+{{- $triggersJson = dict "triggers" $triggers | toJson }}
+{{- $webhookSecret = required "board.github.webhookSecret.name is required when board.github.triggers is set: the Secret that holds the webhook secret" .Values.board.github.webhookSecret.name }}
+{{- end }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -22,6 +29,17 @@ spec:
     {{- include "boardhand.selectorLabels" $ctx | nindent 4 }}
   ports:
     - { name: http, port: 8080, targetPort: http }
+{{- if $triggers }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}-triggers
+  labels:
+    {{- include "boardhand.labels" $ctx | nindent 4 }}
+data:
+  triggers.json: {{ $triggersJson | quote }}
+{{- end }}
 ---
 # One replica on a PVC, never more: the engine's local backend is SQLite, a single-writer store (ADR 0005). A
 # StatefulSet replaces the pod by stopping it before starting the next, so two pods never share the volume.
@@ -43,6 +61,11 @@ spec:
     metadata:
       labels:
         {{- include "boardhand.labels" $ctx | nindent 8 }}
+      {{- if $triggers }}
+      annotations:
+        # The server reads the triggers once at start: a change must roll the pod.
+        checksum/triggers: {{ sha256sum $triggersJson }}
+      {{- end }}
     spec:
       serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
@@ -65,6 +88,12 @@ spec:
             - { name: BOARD_TOKENS_FILE, value: {{ printf "/etc/boardhand/%s" .Values.board.tokens.key | quote }} }
             - { name: BOARD_STALE_CHECK_SECONDS, value: {{ .Values.board.stale.checkSeconds | int | quote }} }
             - { name: BOARD_STALE_AFTER_SECONDS, value: {{ .Values.board.stale.afterSeconds | int | quote }} }
+            {{- if $triggers }}
+            - { name: BOARDHAND_TRIGGERS_FILE, value: /etc/boardhand-triggers/triggers.json }
+            - name: GITHUB_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef: { name: {{ $webhookSecret | quote }}, key: {{ .Values.board.github.webhookSecret.key | quote }} }
+            {{- end }}
           ports:
             - { name: http, containerPort: 8080 }
           readinessProbe:
@@ -82,6 +111,9 @@ spec:
             - { name: data, mountPath: /data }
             - { name: tmp, mountPath: /tmp }
             - { name: tokens, mountPath: /etc/boardhand, readOnly: true }
+            {{- if $triggers }}
+            - { name: triggers, mountPath: /etc/boardhand-triggers, readOnly: true }
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -90,6 +122,11 @@ spec:
             secretName: {{ $secret | quote }}
             # fsGroup 10001 reads it; nobody else does.
             defaultMode: 0440
+        {{- if $triggers }}
+        - name: triggers
+          configMap:
+            name: {{ $name }}-triggers
+        {{- end }}
       {{- with .Values.board.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

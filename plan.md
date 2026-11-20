@@ -61,6 +61,8 @@ Terms:
 - **Worker**: one process (one Deployment) that serves one route with up to `concurrency` claim loops.
 - **Backend**: the adapter that starts, follows and cancels a run on an agent platform.
 - **Run**: one agent execution for one claimed task (a pi session, a Job).
+- **Trigger**: a rule in the board server's triggers file that turns a GitHub webhook event into a task in a channel
+  (ADR 0008). The task is owned by the principal `boardhand:source:github`, which a route lists in `from`.
 - **Claim / lease**: the board's fenced hold on a task. A write with a claim that is over gets `409 claim_lost`.
 
 One task, start to end:
@@ -126,6 +128,8 @@ Status: built on branch `7-deployment`; not yet deployed to a cluster. See [docs
 - Real engine grants for workers (today the board server narrows each worker with `x-board-can`, ADR 0005), and a
   per-worker token rotation story (today: edit the Secret and restart).
 - Board identity per run (today all runs of a worker share its board token; the profile header is not verified).
+- Report a task's result back to GitHub (a PR or issue comment), from settled tasks that carry `github.event` and `repo`
+  (ADR 0008 only creates tasks).
 - Budgets and cost labels, roles (plan / work / review) as in `templates/swarm`.
 
 ## 6. Risks
@@ -171,6 +175,8 @@ src/
 server/             the board server, a separate program (ADR 0005)
   main.ts           entrypoint; app.ts wires the engine, auth.ts tokens and worker scopes, http.ts node:http,
                     stale.ts the stale-task check, config.ts environment
+  triggers.ts       the triggers file: schema, matching, templates (ADR 0008)
+  github.ts         POST /hooks/github: signature check, delivery to triggers, task creation
   inspect.ts        entrypoint of the board's UI (the SDK's inspector, ADR 0007); inspector.ts its config and server
 test/               unit, worker, e2e and test/server/ tests
 Dockerfile          one image, three entrypoints (worker, board, inspector)

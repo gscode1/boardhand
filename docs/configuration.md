@@ -103,6 +103,8 @@ once, exiting 2.
 | `PORT` | `8080` | integer, 0 to 65535 | Listening port (0: the OS picks one; logged in `server.start`). |
 | `BOARD_STALE_CHECK_SECONDS` | `60` | integer, 0 to 86400 | How often to look for stale tasks; 0 turns the check off. |
 | `BOARD_STALE_AFTER_SECONDS` | `900` | integer, 1 and up | A ready task older than this is stale. |
+| `BOARDHAND_TRIGGERS_FILE` | none | a file path | The GitHub triggers file ([below](#github-triggers)). Without it, `POST /hooks/github` answers 404. |
+| `GITHUB_WEBHOOK_SECRET` | required with `BOARDHAND_TRIGGERS_FILE` | any text | The secret of the GitHub webhook; the server verifies each delivery's signature with it. **Secret.** Never logged. |
 
 ### Tokens file
 
@@ -126,6 +128,144 @@ review:worker:<64 hex chars>:review/,dev
 
 Tokens are compared in constant time and never logged; an invalid file is reported by line number without values. A
 changed file takes effect at the next start.
+
+### GitHub triggers
+
+With `BOARDHAND_TRIGGERS_FILE` set, the board server accepts GitHub webhooks at `POST /hooks/github` and turns matching
+events into tasks ([ADR 0008](decisions/0008-github-triggers.md)). Delivery is the webhook only; the result is not posted
+back to GitHub yet.
+
+Each delivery must carry a valid `X-Hub-Signature-256` (HMAC-SHA256 of the raw body with `GITHUB_WEBHOOK_SECRET`):
+missing or wrong is 401, and the body is not parsed. The body is capped at 5 MiB (413). A valid signature reaches only
+this path; it never authenticates a request to the board API.
+
+The file is JSON, read once at start; every problem is reported at once and the server exits 2. With the Helm chart you
+write the triggers as YAML under `board.github.triggers` and the chart renders the file. A change restarts the pod.
+
+```json
+{
+  "triggers": [
+    {
+      "name": "renovate",
+      "repos": ["acme/*"],
+      "event": "pull_request",
+      "actions": ["opened", "synchronize"],
+      "when": { "pull_request.user.login": ["renovate[bot]"] },
+      "channel": "agents/deps",
+      "labels": { "kind": "renovate" },
+      "text": "Check Renovate's update {{pull_request.html_url}}: {{pull_request.title}}"
+    }
+  ]
+}
+```
+
+| Field | Rule |
+|---|---|
+| `name` | `[a-z][a-z0-9-]{0,31}`, unique. Part of the task's idempotency id and of every log line about it. |
+| `repos` | Required, non-empty: `owner/name` or `owner/*`, matched case-insensitively against `repository.full_name`. An event without a repository never matches. |
+| `event` | The `X-GitHub-Event` value, for example `pull_request`, `issues`, `issue_comment`. |
+| `actions` | Optional list of `action` values. Absent: any action, and events that have none. |
+| `when` | Required. Dotted payload path to a list of accepted values (any of them, compared exactly; strings, numbers, booleans, `null`). A segment ending in `[]` means any element of that array (`pull_request.labels[].name`). A missing path does not match. Every condition must hold. Exact match only: no prefix, pattern or regular expression. |
+| `channel` | A board channel name (not a subtree). |
+| `labels` | Optional static labels, checked against the engine's rules. They may not set the derived keys below. |
+| `text` | The task text. `{{dotted.path}}` is replaced by that payload value (a string, number or boolean). A missing or non-scalar value is an error for this trigger, not an empty string. The result is clipped to 10 000 characters. |
+
+**The who-gate is mandatory.** `when` must name at least one path that says who caused or wrote the event: 
+`sender.login`, `sender.id`, or a path ending in `.user.login`, `.user.id` or `.author_association`. On a public
+repository anyone can open an issue or comment, and the text goes to an agent. Use these paths, and the values that make
+them a real gate:
+
+- `sender.login`: the account that caused the event, for example `["alice"]` or `["renovate[bot]"]`.
+- `pull_request.user.login`, `issue.user.login`: the author of the PR or issue.
+- `comment.author_association` (or `issue.author_association`): `OWNER`, `MEMBER` or `COLLABORATOR`, so only people with
+  a role in the repository or organization pass. `CONTRIBUTOR` and `NONE` admit outsiders.
+
+Other paths, such as `sender.type`, do not count as a gate: `sender.type: [User]` admits every human account, so a
+trigger gated only on it is a configuration error.
+
+**Derived labels.** The server sets these on every task, and a trigger's `labels` may not use them:
+
+| Label | Value |
+|---|---|
+| `github.event` | The `X-GitHub-Event` value. |
+| `repo` | `repository.full_name`. The pi backend uses it as the session's repository. |
+| `branch` | `pull_request.head.ref`, only for a `pull_request` event whose head is in the same repository. A fork's branch is never set. |
+
+Payload text never becomes any other label value, because labels steer routing and backends.
+
+**Who owns the task.** Tasks are created as the principal `boardhand:source:github`, narrowed by the server to post and
+label in the channels the triggers name. It cannot claim or settle. A route must list `boardhand:source:github` in its
+`BOARDHAND_FROM` (route `from` in the chart) to run these tasks; other routes never see them.
+
+**Idempotency.** Each task is posted with the id `github:<X-GitHub-Delivery>:<trigger name>`. A redelivery returns the
+task already made; two triggers that match one delivery make two tasks. A 409 `duplicate_id` is an error: the id was
+used for a different post.
+
+**Answers.**
+
+| Answer | When |
+|---|---|
+| 200 | A `ping`, or an event that matches no trigger. |
+| 200 with the task IDs | Every matching trigger created its task, or already had it. |
+| 422 | A template error: that trigger is skipped and logged with its name. |
+| 502 | The board refused or failed. Answered quickly, so GitHub marks the delivery failed. Redeliver it by hand: GitHub does not retry on its own. Other matching triggers are still tried, and a redelivery makes only the missing tasks. |
+| 401, 413, 404 | Bad or missing signature, body over 5 MiB, no triggers file. |
+
+Examples (the `repos`, channels and logins are yours to change):
+
+A Renovate PR, gated on its author:
+
+```json
+{
+  "name": "renovate",
+  "repos": ["acme/*"],
+  "event": "pull_request",
+  "actions": ["opened", "synchronize"],
+  "when": { "pull_request.user.login": ["renovate[bot]"] },
+  "channel": "agents/deps",
+  "labels": { "kind": "renovate" },
+  "text": "Check Renovate's update {{pull_request.html_url}}: {{pull_request.title}}"
+}
+```
+
+An issue labeled `agent` by a maintainer, gated on who applied the label (`sender.login` is the labeler, not the
+issue's author):
+
+```json
+{
+  "name": "agent-issue",
+  "repos": ["acme/app"],
+  "event": "issues",
+  "actions": ["labeled"],
+  "when": { "label.name": ["agent"], "sender.login": ["alice", "bob"] },
+  "channel": "agents/dev",
+  "text": "Work on {{issue.html_url}}: {{issue.title}}\n\n{{issue.body}}"
+}
+```
+
+A `/boardhand` comment from a maintainer. `when` matches whole values, so this trigger runs only when the comment body
+is exactly `/boardhand`, and the gate is the commenter's association with the repository. A comment such as
+`/boardhand fix the typo` does not match; there is no prefix match:
+
+```json
+{
+  "name": "boardhand-comment",
+  "repos": ["acme/app"],
+  "event": "issue_comment",
+  "actions": ["created"],
+  "when": {
+    "comment.body": ["/boardhand"],
+    "comment.author_association": ["OWNER", "MEMBER", "COLLABORATOR"]
+  },
+  "channel": "agents/dev",
+  "text": "Work on {{issue.html_url}}: {{issue.title}}\n\n{{issue.body}}"
+}
+```
+
+In the last two examples the issue text is written by whoever opened the issue, so it is untrusted input to the agent
+even though a maintainer started the run.
+
+Setting up the webhook and the Secret is in [deployment.md](deployment.md#8-github-webhooks).
 
 ### Server log events
 
