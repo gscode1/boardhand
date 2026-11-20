@@ -8,6 +8,10 @@ export type ServerConfig = {
   /** 0 turns the stale-task check off. */
   staleCheckSeconds: number;
   staleAfterSeconds: number;
+  /** Absent: `/hooks/github` answers 404. */
+  triggersFile?: string;
+  /** Present exactly when `triggersFile` is. Secret: never logged. */
+  githubWebhookSecret?: string;
 };
 
 export class ConfigError extends Error {
@@ -49,8 +53,22 @@ export function loadConfig(env: Env = process.env): ServerConfig {
   const port = integer("PORT", 8080, 0, 65535);
   const staleCheckSeconds = integer("BOARD_STALE_CHECK_SECONDS", 60, 0, 86_400);
   const staleAfterSeconds = integer("BOARD_STALE_AFTER_SECONDS", 900, 1, 31_536_000);
+  const triggersFile = text("BOARDHAND_TRIGGERS_FILE");
+  const githubWebhookSecret = text("GITHUB_WEBHOOK_SECRET");
+  if (triggersFile !== undefined && githubWebhookSecret === undefined)
+    problems.push("GITHUB_WEBHOOK_SECRET is required when BOARDHAND_TRIGGERS_FILE is set");
+  if (triggersFile === undefined && githubWebhookSecret !== undefined)
+    problems.push("BOARDHAND_TRIGGERS_FILE is required when GITHUB_WEBHOOK_SECRET is set");
   if (problems.length > 0) throw new ConfigError(problems);
-  return { port, dataDir, publicUrl, tokensFile, staleCheckSeconds, staleAfterSeconds };
+  return {
+    port,
+    dataDir,
+    publicUrl,
+    tokensFile,
+    staleCheckSeconds,
+    staleAfterSeconds,
+    ...(triggersFile !== undefined && githubWebhookSecret !== undefined ? { triggersFile, githubWebhookSecret } : {}),
+  };
 }
 
 function isHttpUrl(value: string): boolean {

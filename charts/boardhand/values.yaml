@@ -30,6 +30,22 @@ board:
   #   - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress } }
   ingress:
     from: []
+  # GitHub webhook triggers (ADR 0008, docs/configuration.md): each turns a matching GitHub event into a task. Empty:
+  # no triggers file, no secret, and POST /hooks/github answers 404. Route that path from your gateway to the board
+  # Service yourself (only that path); with the gateway in board.ingress.from, the NetworkPolicy needs no change.
+  # Example (a Renovate PR):
+  #   - name: renovate
+  #     repos: ["acme/*"]
+  #     event: pull_request
+  #     actions: [opened, synchronize]
+  #     when: { pull_request.user.login: ["renovate[bot]"] }   # a who-gate is mandatory
+  #     channel: agents/deps
+  #     labels: { kind: renovate }
+  #     text: "Check Renovate's update {{pull_request.html_url}}: {{pull_request.title}}"
+  github:
+    triggers: []
+    # Required when triggers is set: an existing Secret holding the webhook's secret (becomes GITHUB_WEBHOOK_SECRET).
+    webhookSecret: { name: "", key: secret }
   # With board.enabled false (a board elsewhere): where the workers' egress to it goes, in the route egress shape.
   egress: []
   resources:

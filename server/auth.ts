@@ -80,7 +80,16 @@ export function parseTokens(text: string): TokenEntry[] {
   return entries;
 }
 
-export function principalId(entry: Pick<TokenEntry, "name" | "kind">): string {
+/**
+ * The webhook source: made in memory at start, never in the tokens file (parseTokens still accepts only person and
+ * worker), so no one can present its credential but the server itself.
+ */
+export type SourceEntry = Omit<TokenEntry, "kind"> & { kind: "source" };
+
+/** What a source may do: post and label, in its channels only. It cannot read, claim or settle. */
+const SOURCE_PERMISSIONS = "post,label";
+
+export function principalId(entry: Pick<TokenEntry | SourceEntry, "name" | "kind">): string {
   return `boardhand:${entry.kind}:${entry.name}`;
 }
 
@@ -88,7 +97,7 @@ const digest = (value: string): Buffer => createHash("sha256").update(value).dig
 
 export type Auth = {
   /** The entry whose token equals `credential`, in constant time with respect to the stored tokens. */
-  lookup(credential: string | null): TokenEntry | undefined;
+  lookup(credential: string | null): TokenEntry | SourceEntry | undefined;
   /** For `board({ authenticate })`: null without a credential, 401 for one that matches nothing. */
   authenticate: Authenticate;
   /**
@@ -98,16 +107,17 @@ export type Auth = {
   scopeFor(credential: string | null): string | undefined;
 };
 
-function scopeOf(entry: TokenEntry): string {
-  return entry.channels.map((channel) => `${channel}=${WORKER_PERMISSIONS}`).join(";");
+function scopeOf(entry: TokenEntry | SourceEntry): string {
+  const permissions = entry.kind === "source" ? SOURCE_PERMISSIONS : WORKER_PERMISSIONS;
+  return entry.channels.map((channel) => `${channel}=${permissions}`).join(";");
 }
 
-export function createAuth(entries: readonly TokenEntry[]): Auth {
-  const hashed = entries.map((entry) => ({ entry, hash: digest(entry.token) }));
-  const lookup = (credential: string | null): TokenEntry | undefined => {
+export function createAuth(entries: readonly TokenEntry[], source?: SourceEntry): Auth {
+  const hashed = [...entries, ...(source ? [source] : [])].map((entry) => ({ entry, hash: digest(entry.token) }));
+  const lookup = (credential: string | null): TokenEntry | SourceEntry | undefined => {
     if (credential === null) return undefined;
     const probe = digest(credential);
-    let found: TokenEntry | undefined;
+    let found: TokenEntry | SourceEntry | undefined;
     // No early exit: the time taken does not depend on which entry, if any, matched.
     for (const { entry, hash } of hashed) if (timingSafeEqual(probe, hash)) found = entry;
     return found;
@@ -120,14 +130,14 @@ export function createAuth(entries: readonly TokenEntry[]): Auth {
       if (entry === undefined) throw new HttpError(401, "unauthorized", "unknown token");
       // A worker is a `person` to the engine and is narrowed only by x-board-can. Bind that restriction to the
       // credential used here: unless the forced scope for exactly this credential is on the request, refuse.
-      if (entry.kind === "worker" && request.headers.get("x-board-can") !== scopeOf(entry)) {
-        throw new HttpError(403, "forbidden", "worker scope missing");
+      if (entry.kind !== "person" && request.headers.get("x-board-can") !== scopeOf(entry)) {
+        throw new HttpError(403, "forbidden", "credential scope missing");
       }
       return { id: principalId(entry), kind: "person", handle: entry.name };
     },
     scopeFor: (credential) => {
       const entry = lookup(credential);
-      return entry?.kind === "worker" ? scopeOf(entry) : undefined;
+      return entry !== undefined && entry.kind !== "person" ? scopeOf(entry) : undefined;
     },
   };
 }

@@ -3,6 +3,7 @@
 import { startServer } from "./app.js";
 import { TokensError } from "./auth.js";
 import { ConfigError, loadConfig } from "./config.js";
+import { TriggersError } from "./triggers.js";
 import type { Log } from "./stale.js";
 
 const log: Log = (entry) => {
@@ -14,7 +15,7 @@ async function main(): Promise<void> {
   try {
     server = await startServer(loadConfig(), log);
   } catch (error) {
-    if (error instanceof ConfigError || error instanceof TokensError) {
+    if (error instanceof ConfigError || error instanceof TokensError || error instanceof TriggersError) {
       log({ level: "error", event: "config.invalid", problems: error.problems });
       process.exit(2);
     }
