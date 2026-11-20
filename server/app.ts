@@ -1,12 +1,15 @@
 // The board server: the engine on its local SQLite backend, with our authentication, behind node:http.
 // This is a separate program from the worker (ADR 0005), so it may import @vercel/board directly.
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { board, type Board } from "@vercel/board";
 import { local } from "@vercel/board/backend-local";
-import { bearerOf, createAuth, parseTokens } from "./auth.js";
+import { bearerOf, createAuth, parseTokens, type SourceEntry } from "./auth.js";
 import type { ServerConfig } from "./config.js";
+import { GITHUB_HOOK_PATH, githubHook } from "./github.js";
 import { listen } from "./http.js";
 import { startStaleCheck, type Log } from "./stale.js";
+import { channelsOf, loadTriggers } from "./triggers.js";
 
 export type RunningServer = {
   port: number;
@@ -25,14 +28,49 @@ export type ServerTuning = {
 
 export async function startServer(config: ServerConfig, log: Log, tuning: ServerTuning = {}): Promise<RunningServer> {
   const entries = parseTokens(await readFile(config.tokensFile, "utf8"));
-  const auth = createAuth(entries);
+  const triggers = config.triggersFile === undefined ? undefined : await loadTriggers(config.triggersFile);
+  // The webhook creates tasks as an in-memory principal, scoped by the engine to the triggers' channels (ADR 0008).
+  const source: SourceEntry | undefined = triggers && {
+    name: "github",
+    kind: "source",
+    token: randomBytes(32).toString("base64url"),
+    channels: channelsOf(triggers),
+  };
+  const auth = createAuth(entries, source);
   const backend = local({ dir: config.dataDir });
   const engine: { team?: Board } = {};
   let accepting = true;
+  let publicUrl = config.publicUrl;
+  const hook =
+    triggers && source && config.githubWebhookSecret !== undefined
+      ? githubHook({
+          secret: config.githubWebhookSecret,
+          triggers,
+          log,
+          postTask: (body) => {
+            const scope = auth.scopeFor(source.token);
+            if (!engine.team || scope === undefined) return Promise.resolve(new Response("starting", { status: 503 }));
+            return engine.team.fetch(
+              new Request(`${publicUrl}/tasks`, {
+                method: "POST",
+                headers: {
+                  authorization: `Bearer ${source.token}`,
+                  "x-board-can": scope,
+                  "content-type": "application/json",
+                },
+                body,
+              }),
+            );
+          },
+        })
+      : undefined;
   const http = await listen({
     port: config.port,
-    fetch: (request) =>
-      engine.team ? engine.team.fetch(request) : Promise.resolve(new Response("starting", { status: 503 })),
+    fetch: (request) => {
+      if (new URL(request.url).pathname === GITHUB_HOOK_PATH)
+        return hook ? hook(request) : Promise.resolve(new Response("not found", { status: 404 }));
+      return engine.team ? engine.team.fetch(request) : Promise.resolve(new Response("starting", { status: 503 }));
+    },
     // A worker's limits come from its token, never from what it sends. Fail closed: whatever x-board-can the client
     // sent is dropped, and an Authorization header we cannot parse is refused rather than passed on, so the engine
     // never sees a credential that this function did not scope. `authenticate` checks the binding again.
@@ -49,7 +87,7 @@ export async function startServer(config: ServerConfig, log: Log, tuning: Server
     },
     health: () => accepting,
   });
-  const publicUrl = tuning.publicUrl?.(http.port) ?? config.publicUrl;
+  publicUrl = tuning.publicUrl?.(http.port) ?? config.publicUrl;
   // The engine checks every token's audience against this URL, so it is the one clients use.
   const handle = board({ backend, url: publicUrl, authenticate: auth.authenticate });
   engine.team = handle;
@@ -72,6 +110,7 @@ export async function startServer(config: ServerConfig, log: Log, tuning: Server
     port: http.port,
     url: publicUrl,
     tokens: entries.map((entry) => ({ name: entry.name, kind: entry.kind, channels: entry.channels })),
+    ...(triggers ? { triggers: triggers.map((t) => ({ name: t.name, channel: t.channel })) } : {}),
   });
   let stopped: Promise<void> | undefined;
   return {
