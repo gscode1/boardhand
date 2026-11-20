@@ -1,6 +1,7 @@
-# One image, two programs: the worker (default) and the board server.
+# One image, three programs: the worker (default), the board server and the board's UI.
 #   worker: node dist/main.js
 #   board:  node dist/server/main.js
+#   ui:     node dist/server/inspect.js
 # It runs as uid 10001 and writes nowhere by itself, so a read-only root filesystem works; mount emptyDirs or volumes
 # where a program writes (the worker's BOARDHAND_STATE_DIR, the board's BOARD_DATA_DIR, /tmp).
 

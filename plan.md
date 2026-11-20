@@ -142,7 +142,7 @@ Status: built on branch `7-deployment`; not yet deployed to a cluster. See [docs
 
 ## 7. Out of scope
 
-- A board UI of our own (the engine ships `vb inspect`).
+- A board UI of our own (the engine ships the inspector; it runs in the cluster per [ADR 0007](docs/decisions/0007-inspector-in-cluster.md)).
 - Hosting on Vercel or using Vercel's hosted board.
 - Changes to agent platforms; a backend is a plain client.
 
@@ -171,8 +171,9 @@ src/
 server/             the board server, a separate program (ADR 0005)
   main.ts           entrypoint; app.ts wires the engine, auth.ts tokens and worker scopes, http.ts node:http,
                     stale.ts the stale-task check, config.ts environment
+  inspect.ts        entrypoint of the board's UI (the SDK's inspector, ADR 0007); inspector.ts its config and server
 test/               unit, worker, e2e and test/server/ tests
-Dockerfile          one image, two entrypoints (worker, board)
+Dockerfile          one image, three entrypoints (worker, board, inspector)
 .github/workflows/  check.yml (build, test, chart lint), image.yml (ghcr.io push)
 charts/boardhand/   Helm chart; examples/c2.yaml is the lab values
 docs/decisions/

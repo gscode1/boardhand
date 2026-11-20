@@ -45,9 +45,10 @@ Every variable, its range, the fake backend's options, the exit codes and the lo
 
 ## Deploy
 
-One image runs either program (`node dist/main.js`, the worker, or `node dist/server/main.js`, the board), and one Helm
-chart installs the board (StatefulSet and PVC) and a worker Deployment per route, under Pod Security `restricted` and
-NetworkPolicies:
+One image runs any of three programs (`node dist/main.js`, the worker, `node dist/server/main.js`, the board, or
+`node dist/server/inspect.js`, the board's UI), and one Helm chart installs the board (StatefulSet and PVC), a worker
+Deployment per route and, optionally, the UI behind a Gateway (no authentication yet, see
+[ADR 0007](docs/decisions/0007-inspector-in-cluster.md)), under Pod Security `restricted` and NetworkPolicies:
 
 ```
 helm upgrade --install boardhand charts/boardhand -n boardhand -f charts/boardhand/examples/c2.yaml

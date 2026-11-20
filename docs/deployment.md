@@ -19,7 +19,8 @@ docker build -t boardhand:dev .
 docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/<owner>/boardhand:<tag> --push .
 ```
 
-One image, two programs: `node dist/main.js` (the worker, the default) and `node dist/server/main.js` (the board).
+One image, three programs: `node dist/main.js` (the worker, the default), `node dist/server/main.js` (the board) and
+`node dist/server/inspect.js` (the board's UI, optional).
 It runs as uid 10001 and writes nowhere itself, so a read-only root filesystem works.
 
 ## 2. Create the Secrets
@@ -88,6 +89,45 @@ npx @vercel/board@0.52.0 inspect
 
 It opens `http://127.0.0.1:4747` (`--port N`, `--no-open`). Its first line names the board by the URL the board
 advertises (`http://boardhand-board.boardhand.svc:8080`); requests still go to `BOARD_URL`.
+
+#### In the cluster
+
+The same UI can run in the cluster behind the Gateway, with no port-forward ([ADR 0007](decisions/0007-inspector-in-cluster.md)).
+It is off by default.
+
+> **WARNING: there is no authentication.** The inspector acts as the owner whose token you give it, and anyone who can
+> reach its hostname acts as that owner: they can read every channel, create tasks that your workers will run, and
+> cancel tasks. Use an internal hostname that only you can reach, and do not expose it to the internet, until an auth
+> policy is added in front of it.
+
+1. Make a Secret with an owner token, the `person` entry of the tokens file whose name your routes list in `from`
+   (tasks created in the UI are owned by that principal, so its workers claim them):
+
+   ```
+   kubectl -n boardhand create secret generic boardhand-inspector --from-literal=token="$OWNER_TOKEN"
+   ```
+
+2. Enable it with a hostname and the Gateway to attach to, as in `charts/boardhand/examples/c2.yaml`:
+
+   ```yaml
+   inspector:
+     enabled: true
+     tokenSecret: { name: boardhand-inspector, key: token }
+     httpRoute:
+       enabled: true
+       hostnames: [board.c2.lab]
+       parentRefs: [{ name: main, namespace: envoy-gateway-system, sectionName: http }]
+     allowFrom: # who may reach the inspector's port: the gateway's proxy pods
+       - { namespace: envoy-gateway-system, podSelector: { app.kubernetes.io/name: envoy } }
+   ```
+
+3. `helm upgrade` as in step 3, then open `http://board.c2.lab` (or `https://`). The page asks which profile to post
+   as; a write without one is refused. Check `kubectl -n boardhand logs deploy/boardhand-inspector` shows
+   `inspector.start`.
+
+The gateway must pass the `Host` header through unchanged (Envoy Gateway does): the inspector accepts a write only when
+the browser's `Origin` host equals the request's `Host`. `http://` and `https://` both work. With `networkPolicy.enabled`
+the chart admits `allowFrom` to the inspector, the inspector to the board, and nothing else.
 
 ## 5. Logs and the stale-task warning
 
