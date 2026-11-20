@@ -1,9 +1,10 @@
-# The lab cluster "c2": the board on Longhorn, two routes that send tasks to pi-durable-k8s in pi-durable-poc: `dev`
-# (one channel, one profile) and `agents/` (a channel subtree, where the channel under it picks the pi profile).
+# The lab cluster "c2": the board on Longhorn, two routes that send tasks to cela (formerly pi-durable-k8s) in cela-dev:
+# `dev` (one channel, one profile) and `agents/` (a channel subtree, where the channel under it picks the profile), and
+# GitHub webhooks from gscode1/pi-tick through the public Gateway (argo-c2 docs/public-exposure.md).
 # Create the Secrets first (docs/deployment.md). Pin image.tag to a sha from the image workflow.
 image:
-  tag: main
-  pullPolicy: Always
+  tag: c948395
+  pullPolicy: IfNotPresent
 
 board:
   persistence:
@@ -12,6 +13,36 @@ board:
   tokens:
     existingSecret: boardhand-board-tokens
     key: tokens
+  # The public Gateway's proxy reaches the board for POST /hooks/github only (its HTTPRoute matches nothing else).
+  ingress:
+    from:
+      - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: envoy-gateway-system } }
+        podSelector: { matchLabels: { gateway.envoyproxy.io/owning-gateway-name: public } }
+  # Renovate on pi-tick runs with gscode1's token, so its PRs are gscode1's and it labels them `renovate` itself.
+  # `labeled` fires once per PR; pushes to the PR (`synchronize`) are left out so a rebase does not start another run.
+  # The namespace must carry gateway.gskode.com/public=true for the route to attach to Gateway `public`.
+  github:
+    webhookSecret: { name: boardhand-github-webhook, key: secret }
+    httpRoute:
+      enabled: true
+      hostnames: [hooks.gskode.com]
+      parentRefs:
+        - { group: gateway.networking.k8s.io, kind: Gateway, name: public, namespace: envoy-gateway-system, sectionName: http }
+    triggers:
+      - name: pi-tick-renovate
+        repos: [gscode1/pi-tick]
+        event: pull_request
+        actions: [labeled]
+        when:
+          label.name: [renovate]
+          sender.login: [gscode1]
+        channel: agents/renovate
+        labels: { source: renovate }
+        text: |
+          Renovate opened {{pull_request.html_url}} in {{repository.full_name}}: {{pull_request.title}}
+          Branch {{pull_request.head.ref}} into {{pull_request.base.ref}}.
+
+          {{pull_request.body}}
 
 # The board's UI at board.c2.lab through the lab Gateway (no authentication yet: ADR 0007). Needs the Secret
 # `boardhand-inspector`, key `token`, holding an owner token (docs/deployment.md).
@@ -36,7 +67,7 @@ routes:
     from: ["boardhand:person:gs"]
     backend: pi
     backendOptions:
-      url: http://pi-ingest.pi-durable-poc.svc:8080
+      url: http://pi-ingest.cela-dev.svc:8080
       profile: coding
       deleteOnFinish: true
     concurrency: 1
@@ -44,7 +75,7 @@ routes:
     backendTokenSecret: { name: boardhand-pi, key: token }
     egress:
       # pi-ingest's Service port is 8080 and so is its container port.
-      - namespace: pi-durable-poc
+      - namespace: cela-dev
         podSelector: { app.kubernetes.io/name: pi-ingest }
         ports: [8080]
   # A subtree route: tasks in agents/research or agents/coding/x run with the profile research or coding. Adding a
@@ -53,10 +84,11 @@ routes:
   # `agents/` in the tokens file. Leave model and sandboxSize out: they would override each profile's defaults.
   - name: agents
     channel: agents/
-    from: ["boardhand:person:gs"]
+    # boardhand:source:github: tasks the GitHub webhook creates (ADR 0008), here in agents/renovate.
+    from: ["boardhand:person:gs", "boardhand:source:github"]
     backend: pi
     backendOptions:
-      url: http://pi-ingest.pi-durable-poc.svc:8080
+      url: http://pi-ingest.cela-dev.svc:8080
       profileChannel: agents/
       profiles: "*"
       deleteOnFinish: true
@@ -64,6 +96,6 @@ routes:
     boardTokenSecret: { name: boardhand-worker-agents, key: token }
     backendTokenSecret: { name: boardhand-pi, key: token }
     egress:
-      - namespace: pi-durable-poc
+      - namespace: cela-dev
         podSelector: { app.kubernetes.io/name: pi-ingest }
         ports: [8080]
