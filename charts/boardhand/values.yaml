@@ -40,6 +40,31 @@ board:
   tolerations: []
   affinity: {}
 
+# The board's own UI, the SDK's inspector (`node dist/server/inspect.js`), behind a Gateway API HTTPRoute (ADR 0007).
+# It has NO authentication: it acts as the owner whose token is in tokenSecret, and whoever reaches it acts as that
+# owner. Keep it on an internal hostname until a gateway auth policy is in front of it.
+inspector:
+  enabled: false
+  # Required when enabled: a Secret with an owner (`person`) token of the board's tokens file.
+  tokenSecret: { name: "", key: token }
+  port: 4747
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { memory: 256Mi }
+  httpRoute:
+    enabled: false
+    # Raw Gateway API parentRefs and hostnames, for example:
+    #   parentRefs: [{ name: main, namespace: envoy-gateway-system, sectionName: http }]
+    #   hostnames: [board.example.lab]
+    parentRefs: []
+    hostnames: []
+  # Who may connect to the inspector's port, in the shape of a route egress entry minus ports: the gateway's proxy pods,
+  # for example [{ namespace: envoy-gateway-system, podSelector: { app.kubernetes.io/name: envoy } }].
+  allowFrom: []
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
 # One worker Deployment per entry. All fields are validated when the chart renders.
 #
 # routes:
