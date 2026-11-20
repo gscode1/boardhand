@@ -1,5 +1,5 @@
-# The lab cluster "c2": the board on Longhorn, two routes that send tasks to pi-durable-k8s in pi-durable-poc: `dev` (one channel, one profile) and `agents/` (a
-# channel subtree, where the channel under it picks the pi profile).
+# The lab cluster "c2": the board on Longhorn, two routes that send tasks to pi-durable-k8s in pi-durable-poc: `dev`
+# (one channel, one profile) and `agents/` (a channel subtree, where the channel under it picks the pi profile).
 # Create the three Secrets first (docs/deployment.md). Pin image.tag to a sha from the image workflow.
 image:
   tag: main
@@ -32,7 +32,8 @@ routes:
         podSelector: { app.kubernetes.io/name: pi-ingest }
         ports: [8080]
   # A subtree route: tasks in agents/research or agents/coding/x run with the profile research or coding. Adding a
-  # channel or an allowed profile needs no redeploy (ADR 0006). The board token of this worker must be scoped
+  # channel, or a profile in pi, needs no redeploy (ADR 0006): `profiles: "*"` accepts any profile pi has; a list
+  # would need a redeploy to grow. The board token of this worker must be scoped
   # `agents/` in the tokens file. Leave model and sandboxSize out: they would override each profile's defaults.
   - name: agents
     channel: agents/
@@ -41,7 +42,7 @@ routes:
     backendOptions:
       url: http://pi-ingest.pi-durable-poc.svc:8080
       profileChannel: agents/
-      profiles: [research, coding]
+      profiles: "*"
       deleteOnFinish: true
     concurrency: 2
     boardTokenSecret: { name: boardhand-worker-agents, key: token }

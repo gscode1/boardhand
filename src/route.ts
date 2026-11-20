@@ -34,9 +34,9 @@ export const KNOWN_BACKENDS: readonly string[] = ["fake", "pi"];
 
 type Env = Readonly<Record<string, string | undefined>>;
 
-// The intersection of what the board's HTTP and local backends accept for a profile.
 // The board's channel-name grammar; a trailing `/` makes the route a subtree (ADR 0006).
 const CHANNEL = /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*\/?$/;
+// The intersection of what the board's HTTP and local backends accept for a profile.
 const PROFILE = /^[a-z][a-z0-9-]{0,31}$/;
 
 export function loadRoute(env: Env = process.env): Route {
