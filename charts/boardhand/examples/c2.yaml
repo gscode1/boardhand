@@ -20,10 +20,11 @@ inspector:
   tokenSecret: { name: boardhand-inspector, key: token }
   httpRoute:
     enabled: true
-    hostnames: [board.c2.lab]
+    hostnames: [board.gskode.com, board.c2.lab]
     parentRefs:
       - { name: main, namespace: envoy-gateway-system, sectionName: http }
       - { name: main, namespace: envoy-gateway-system, sectionName: https-c2-lab }
+      - { name: main, namespace: envoy-gateway-system, sectionName: https-gskode }
   allowFrom:
     - namespace: envoy-gateway-system
       podSelector: { app.kubernetes.io/name: envoy }
