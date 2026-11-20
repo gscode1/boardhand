@@ -19,7 +19,8 @@ Kanban assumes local worktrees.
 
 - **One interface.** A backend implements, in outline:
   - `start(task, signal) → runId`: start a run for a claimed task. Options (profile, size) are given when the backend
-    is created, from the route.
+    is created, from the route. The profile may instead come from the task's channel
+    ([ADR 0006](0006-subtree-routes-channel-profiles.md)); `start` reads `task.channel` for that.
   - `find(task, hint) → runId | null`: a run already started for this task, for re-attaching after a restart (see ADR
     0004). `hint` is the run id found on the thread or in the claim store; the backend checks it before trusting it.
   - `wait(runId, signal) → progress | result`: follow the run; returns when there is something to report or it ended.
