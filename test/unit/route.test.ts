@@ -77,6 +77,14 @@ describe("loadRoute", () => {
     }
   });
 
+  test("accepts a channel subtree and rejects bad channel names", { timeout: 5000 }, () => {
+    expect(loadRoute({ ...valid, BOARDHAND_CHANNEL: "agents/" }).channel).toBe("agents/");
+    expect(loadRoute({ ...valid, BOARDHAND_CHANNEL: "team-a/agents.v2/" }).channel).toBe("team-a/agents.v2/");
+    for (const bad of ["Agents/", "/agents", "agents//x", "-x", "a b", "agents/*", "a/../b"]) {
+      expect(() => loadRoute({ ...valid, BOARDHAND_CHANNEL: bad }), bad).toThrow(/BOARDHAND_CHANNEL must be a channel/);
+    }
+  });
+
   test("requires at least one owner", { timeout: 5000 }, () => {
     expect(() => loadRoute({ ...valid, BOARDHAND_FROM: " , " })).toThrow(/BOARDHAND_FROM/);
   });
@@ -119,5 +127,19 @@ describe("loadRoute", () => {
         expect(JSON.stringify(describeRoute(loadRoute(pi)))).not.toContain("pi-secret-token");
       },
     );
+
+    test("checks profileChannel against the route channel", { timeout: 5000 }, () => {
+      const options = (extra: string): Record<string, string> => ({
+        ...pi,
+        BOARDHAND_CHANNEL: "agents/",
+        BOARDHAND_BACKEND_OPTIONS: `{"url":"http://pi:8080",${extra}}`,
+      });
+      expect(loadRoute(options('"profileChannel":"agents/"')).channel).toBe("agents/");
+      expect(loadRoute(options('"profileChannel":"agents/x/"')).channel).toBe("agents/");
+      expect(() => loadRoute(options('"profileChannel":"other/"'))).toThrow(/within the route channel/);
+      expect(() => loadRoute({ ...options('"profileChannel":"agents/"'), BOARDHAND_CHANNEL: "agents" })).toThrow(
+        /within the route channel/,
+      );
+    });
   });
 });

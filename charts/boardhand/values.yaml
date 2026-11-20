@@ -44,7 +44,7 @@ board:
 #
 # routes:
 #   - name: dev                        # DNS label; names the Deployment, ServiceAccount and NetworkPolicy
-#     channel: dev                     # BOARDHAND_CHANNEL
+#     channel: dev                     # BOARDHAND_CHANNEL: a channel, or a subtree such as agents/ (ADR 0006)
 #     labels: { team: web }            # BOARDHAND_LABELS: a task must carry all of them
 #     from: ["boardhand:person:gs"]    # BOARDHAND_FROM: owner principal IDs (required, never empty)
 #     backend: pi                      # BOARDHAND_BACKEND

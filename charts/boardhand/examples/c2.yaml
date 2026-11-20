@@ -1,4 +1,5 @@
-# The lab cluster "c2": the board on Longhorn, one route that sends dev/ tasks to pi-durable-k8s in pi-durable-poc.
+# The lab cluster "c2": the board on Longhorn, two routes that send tasks to pi-durable-k8s in pi-durable-poc: `dev`
+# (one channel, one profile) and `agents/` (a channel subtree, where the channel under it picks the pi profile).
 # Create the three Secrets first (docs/deployment.md). Pin image.tag to a sha from the image workflow.
 image:
   tag: main
@@ -27,6 +28,26 @@ routes:
     backendTokenSecret: { name: boardhand-pi, key: token }
     egress:
       # pi-ingest's Service port is 8080 and so is its container port.
+      - namespace: pi-durable-poc
+        podSelector: { app.kubernetes.io/name: pi-ingest }
+        ports: [8080]
+  # A subtree route: tasks in agents/research or agents/coding/x run with the profile research or coding. Adding a
+  # channel, or a profile in pi, needs no redeploy (ADR 0006): `profiles: "*"` accepts any profile pi has; a list
+  # would need a redeploy to grow. The board token of this worker must be scoped
+  # `agents/` in the tokens file. Leave model and sandboxSize out: they would override each profile's defaults.
+  - name: agents
+    channel: agents/
+    from: ["boardhand:person:gs"]
+    backend: pi
+    backendOptions:
+      url: http://pi-ingest.pi-durable-poc.svc:8080
+      profileChannel: agents/
+      profiles: "*"
+      deleteOnFinish: true
+    concurrency: 2
+    boardTokenSecret: { name: boardhand-worker-agents, key: token }
+    backendTokenSecret: { name: boardhand-pi, key: token }
+    egress:
       - namespace: pi-durable-poc
         podSelector: { app.kubernetes.io/name: pi-ingest }
         ports: [8080]

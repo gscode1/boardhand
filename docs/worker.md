@@ -13,7 +13,7 @@ takes one task at a time. Terms are those of [plan.md](../plan.md); the reasons 
 
 ## One task
 
-1. **Claim.** The loop calls `board.claim` with the route's channel, labels, owners, `BOARDHAND_WAIT` and
+1. **Claim.** The loop calls `board.claim` with the route's channel (a subtree claims from every channel below it; the task's own channel is `task.channel`), labels, owners, `BOARDHAND_WAIT` and
    `BOARDHAND_LEASE`. A call that returns no task simply runs again.
 2. **Store the proof.** It writes the claim's `taskId`, `epoch` and `token` to the claim store.
 3. **Renew.** A timer renews the lease every `lease / 3`, independent of what the backend is doing. The first renew is

@@ -56,8 +56,8 @@ flowchart LR
 Terms:
 
 - **Board**: the vercel/board engine with our authentication hook.
-- **Route**: what one worker serves: `channel`, required `labels`, `from` owners, `backend`, backend options (profile,
-  size), `concurrency`.
+- **Route**: what one worker serves: `channel` (one channel or a subtree such as `agents/`, ADR 0006), required
+  `labels`, `from` owners, `backend`, backend options (profile, size), `concurrency`.
 - **Worker**: one process (one Deployment) that serves one route with up to `concurrency` claim loops.
 - **Backend**: the adapter that starts, follows and cancels a run on an agent platform.
 - **Run**: one agent execution for one claimed task (a pi session, a Job).
@@ -99,7 +99,7 @@ Status: built on branch `3-phase-1-worker`. The code is in `src/`; the tests are
 ### Phase 2: pi-durable-k8s backend
 
 - HTTP client of the session API: create session (text, profile, repo), follow turns with `wait`, cancel, delete.
-- Task label `repo` becomes the session's repository; route options choose profile and size.
+- Task label `repo` becomes the session's repository; route options choose profile and size, or the profile comes from the task's channel under a subtree route (ADR 0006).
 - Run id on the thread before the first wait, so a restart re-attaches instead of starting a second session.
 - Test against a fake session API; one manual run against a lab cluster, recorded as a historical observation.
 

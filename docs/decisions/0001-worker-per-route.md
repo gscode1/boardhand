@@ -19,7 +19,8 @@ Facts that decide it (checked against `@vercel/board` 0.52.0 and its `templates/
 
 ## Decision
 
-- **Each route is one worker Deployment.** A route is `channel`, required `labels`, `from` owners, `backend`, backend
+- **Each route is one worker Deployment.** A route is `channel` (one channel, or a subtree such as `agents/`, see
+  [ADR 0006](0006-subtree-routes-channel-profiles.md)), required `labels`, `from` owners, `backend`, backend
   options and `concurrency`. The worker runs up to `concurrency` claim loops for it.
 - **The board does the routing.** A worker claims only what its route matches. There is no second queue and no router
   process.

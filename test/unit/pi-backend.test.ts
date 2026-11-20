@@ -74,6 +74,38 @@ describe("parsePiOptions", () => {
     expect(() => parsePiOptions(raw)).toThrow(problem);
   });
 
+  test("reads profileChannel and profiles", { timeout: 5000 }, () => {
+    expect(parsePiOptions({ url: "http://x", profileChannel: "agents/" }, "agents/")).toMatchObject({
+      profileChannel: "agents/",
+    });
+    const listed = parsePiOptions({ url: "http://x", profileChannel: "agents/", profiles: [" a ", "b"] });
+    expect(listed.profiles).toEqual(["a", "b"]);
+    expect(parsePiOptions({ url: "http://x", profileChannel: "agents/", profiles: "*" }).profiles).toBeUndefined();
+  });
+
+  test.each([
+    [{ profiles: "*" }, undefined, "profiles is only valid with profileChannel"],
+    [{ profileChannel: "agents" }, undefined, "profileChannel must be a channel subtree"],
+    [{ profileChannel: "Agents/" }, undefined, "profileChannel must be a channel subtree"],
+    [{ profileChannel: 3 }, undefined, "profileChannel must be a channel subtree"],
+    [{ profileChannel: "agents/", profiles: [] }, undefined, "profiles must be"],
+    [{ profileChannel: "agents/", profiles: [1] }, undefined, "profiles must be"],
+    [{ profileChannel: "agents/", profiles: "a" }, undefined, "profiles must be"],
+    [{ profileChannel: "other/" }, "agents/", "must be within the route channel"],
+    [{ profileChannel: "agents/" }, "agents", "must be within the route channel"],
+    [{ profileChannel: "agents/" }, "agents/x/", "must be within the route channel"],
+  ])("rejects %j on route %s", { timeout: 5000 }, (raw, routeChannel, problem) => {
+    expect(() => parsePiOptions({ url: "http://x", ...raw }, routeChannel)).toThrow(problem);
+  });
+
+  test("createBackend passes the route channel to the options check", { timeout: 5000 }, () => {
+    const options = { url: "http://x", profileChannel: "agents/" };
+    expect(() => createBackend("pi", options, { PI_TOKEN: "t" }, { channel: "dev" })).toThrow(
+      /within the route channel/,
+    );
+    expect(createBackend("pi", options, { PI_TOKEN: "t" }, { channel: "agents/" }).name).toBe("pi");
+  });
+
   test("createBackend needs PI_TOKEN and never reads it from options", { timeout: 5000 }, () => {
     expect(() => createBackend("pi", { url: "http://x" }, {})).toThrow("PI_TOKEN is required");
     expect(createBackend("pi", { url: "http://x" }, { PI_TOKEN: "t" }).name).toBe("pi");
@@ -131,6 +163,64 @@ describe("start", () => {
     expect(posts.length).toBeGreaterThan(1);
     expect(new Set(posts.map((r) => JSON.stringify(r.body))).size).toBe(1);
     expect(pi.sessions.get(id)?.gone).toBe(false);
+  });
+});
+
+describe("start with a profile from the channel", () => {
+  const at = (channel: string): RunTask => ({ ...task(), channel });
+  const created = (pi: FakePi, id: string): unknown => pi.sessions.get(id)?.created;
+
+  test("uses the first segment below profileChannel", { timeout: 10_000 }, async () => {
+    const pi = await fakePi();
+    const b = backend(pi, { profileChannel: "agents/", profile: "root-default", model: "m" });
+    expect(created(pi, await b.start(at("agents/research"), live()))).toEqual({ profile: "research", model: "m" });
+    expect(created(pi, await b.start(at("agents/research/team-a"), live()))).toEqual({
+      profile: "research",
+      model: "m",
+    });
+    expect(created(pi, await b.start(at("agents/coding/"), live()))).toEqual({ profile: "coding", model: "m" });
+  });
+
+  test("honours a nested profileChannel", { timeout: 10_000 }, async () => {
+    const pi = await fakePi();
+    const b = backend(pi, { profileChannel: "org/agents/" });
+    expect(created(pi, await b.start(at("org/agents/qa/x"), live()))).toEqual({ profile: "qa" });
+  });
+
+  test("the prefix root uses profile if set, else sends none", { timeout: 10_000 }, async () => {
+    const pi = await fakePi();
+    const withDefault = backend(pi, { profileChannel: "agents/", profile: "general" });
+    expect(created(pi, await withDefault.start(at("agents"), live()))).toEqual({ profile: "general" });
+    const without = backend(pi, { profileChannel: "agents/" });
+    expect(created(pi, await without.start(at("agents"), live()))).toEqual({});
+  });
+
+  test("a channel outside the prefix fails start with a plain error and no request", { timeout: 10_000 }, async () => {
+    const pi = await fakePi();
+    const b = backend(pi, { profileChannel: "agents/" });
+    for (const channel of ["dev", "agentsx/y", "other/agents/y"]) {
+      const error: unknown = await b.start(at(channel), live()).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(BackendUnavailableError);
+      expect((error as Error).message).toContain("not under profileChannel");
+    }
+    expect(pi.requests).toEqual([]);
+  });
+
+  test("an allowlist rejects other profiles without calling pi", { timeout: 10_000 }, async () => {
+    const pi = await fakePi();
+    const b = backend(pi, { profileChannel: "agents/", profiles: ["research", "coding"] });
+    expect(created(pi, await b.start(at("agents/coding/x"), live()))).toEqual({ profile: "coding" });
+    const before = pi.requests.length;
+    const error: unknown = await b.start(at("agents/secret"), live()).catch((caught: unknown) => caught);
+    expect((error as Error).message).toBe('profile "secret" is not allowed on this route');
+    expect(error).not.toBeInstanceOf(BackendUnavailableError);
+    expect(pi.requests).toHaveLength(before);
+  });
+
+  test("without profileChannel the task's channel is ignored", { timeout: 10_000 }, async () => {
+    const pi = await fakePi();
+    expect(created(pi, await backend(pi, { profile: "p" }).start(at("agents/x"), live()))).toEqual({ profile: "p" });
   });
 });
 
