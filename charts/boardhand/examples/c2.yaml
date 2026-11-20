@@ -3,7 +3,7 @@
 # GitHub webhooks from gscode1/pi-tick through the public Gateway (argo-c2 docs/public-exposure.md).
 # Create the Secrets first (docs/deployment.md). Pin image.tag to a sha from the image workflow.
 image:
-  tag: c948395
+  tag: f60c269
   pullPolicy: IfNotPresent
 
 board:
