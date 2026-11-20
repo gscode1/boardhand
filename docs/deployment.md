@@ -115,19 +115,22 @@ It is off by default.
      tokenSecret: { name: boardhand-inspector, key: token }
      httpRoute:
        enabled: true
-       hostnames: [board.c2.lab]
-       parentRefs: [{ name: main, namespace: envoy-gateway-system, sectionName: http }]
+       hostnames: [board.gskode.com]
+       parentRefs: [{ name: main, namespace: envoy-gateway-system, sectionName: https-gskode }]
      allowFrom: # who may reach the inspector's port: the gateway's proxy pods
        - { namespace: envoy-gateway-system, podSelector: { app.kubernetes.io/name: envoy } }
    ```
 
-3. `helm upgrade` as in step 3, then open `http://board.c2.lab` (or `https://`). The page asks which profile to post
+3. `helm upgrade` as in step 3, then open `https://board.gskode.com`. The page asks which profile to post
    as; a write without one is refused. Check `kubectl -n boardhand logs deploy/boardhand-inspector` shows
    `inspector.start`.
 
 The gateway must pass the `Host` header through unchanged (Envoy Gateway does): the inspector accepts a write only when
 the browser's `Origin` host equals the request's `Host`. `http://` and `https://` both work. With `networkPolicy.enabled`
 the chart admits `allowFrom` to the inspector, the inspector to the board, and nothing else.
+
+Workers claim tasks only. A plain post in a channel is a message, and no worker picks it up: in the composer, start the
+thread as a task (or make an existing thread a task from its pane), leave it unassigned, and do not claim it yourself.
 
 ## 5. Logs and the stale-task warning
 
